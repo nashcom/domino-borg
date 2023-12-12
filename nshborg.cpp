@@ -1,7 +1,7 @@
 
 /*
 ###########################################################################
-# Domino Auto Config (OneTouchConfig Tool)                                #
+# Domino Borg Backup Integration                                          #
 # Version 0.9.0 30.11.2023                                                #
 # (C) Copyright Daniel Nashed/NashCom 2023                                #
 #                                                                         #
@@ -45,6 +45,7 @@
 /* Global buffer */
 unsigned char  g_Buffer[MAX_BUFFER+1] = {0};
 
+char  g_szVersion[]          = "0.9.0";
 char  g_szBackupEndMarker[]  = "::BORG-BACKUP-END::";
 char  g_nshBorgDir[1024+1]   = {0};
 
@@ -1342,6 +1343,12 @@ int main (int argc, char *argv[])
         else if  (0 == strcmp (argv[consumed], "-pwd"))
         {
             GetPassword();
+            goto Done;
+        }
+
+        else if  (0 == strcmp (argv[consumed], "--version"))
+        {
+            printf ("%s\n", g_szVersion);
             goto Done;
         }
 
