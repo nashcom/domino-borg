@@ -5,7 +5,7 @@
 
 
 CC=gcc
-CFLAGS= -g -Wall -c -fPIC -fpermissive
+CFLAGS= -g -Wall -c -fPIC -pedantic
 LIBS=
 
 PROGRAM=nshborg

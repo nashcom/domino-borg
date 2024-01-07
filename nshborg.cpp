@@ -1,4 +1,3 @@
-
 /*
 ###########################################################################
 # Domino Borg Backup Integration                                          #
@@ -21,7 +20,6 @@
 ###########################################################################
 */
 
-
 #include <stdlib.h>
 #include <stdio.h>
 #include <ctype.h>
@@ -35,6 +33,7 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <pwd.h>
+#include <grp.h>
 
 #define MAX_BUFFER 1048576
 #define MAX_PATH      2048
@@ -45,57 +44,242 @@
 /* Global buffer */
 unsigned char  g_Buffer[MAX_BUFFER+1] = {0};
 
-char  g_szVersion[]          = "0.9.0";
+char  g_szVersion[]          = "0.9.1";
 char  g_szBackupEndMarker[]  = "::BORG-BACKUP-END::";
-char  g_nshBorgDir[1024+1]   = {0};
+char  g_szSSH_AUTH_SOCK[]    = "SSH_AUTH_SOCK";
+char  g_szSSH_AGENT_PID[]    = "SSH_AGENT_PID";
 
 char  g_szBorgBackupBinary[MAX_PATH+1] = "/usr/bin/borg";
+char  g_szSSHAgentBinary[MAX_PATH+1]   = "/usr/bin/ssh-agent";
+char  g_szSSHAddBinary[MAX_PATH+1]     = "/usr/bin/ssh-add";
 char  g_szTarBinary[MAX_PATH+1]        = "/usr/bin/tar";
+char  g_szBorgRepo[MAX_PATH+1]         = "/local/backup/borg";
+char  g_nshBorgDir[1024+1]             = {0};
 char  g_szFilePID[MAX_PATH+1]          = {0};
 char  g_szBorgLogFile[MAX_PATH+1]      = {0};
-char  g_szBorgRepo[MAX_PATH+1]         = "/local/backup/borg";
+char  g_szPassCommand[MAX_PATH+1]      = {0};
 char  g_szPassphrase[256]              = {0};
-char  g_szBorgPWD[256]                 = "borg4domino";
+char  g_szSSHAuthSock[MAX_PATH+1]      = {0};
+char  g_szSSHKeyFile[MAX_PATH+1]       = {0};
+char  g_szSSHKey[8000]                 = {0};
 
-int   g_WaitTime = 500;
-int   g_Verbose =  0;
+pid_t g_SSHAgentPID =   0;
+int   g_SSHKeyLife  =  20;
+int   g_WaitTime    = 500;
+int   g_Verbose     =   0;
+
+uid_t g_uid  = getuid();
+gid_t g_gid  = getgid();
+uid_t g_euid = geteuid();
+gid_t g_egid = getegid();
+
+void PrintUser (const char *pszHeader, uid_t uid)
+{
+    struct passwd *pPasswd = NULL;
+
+    pPasswd = getpwuid (uid);
+
+    if (NULL == pszHeader)
+        return;
+
+    if (NULL == pPasswd)
+        return;
+
+    if (pPasswd->pw_name)
+        printf ("%s: %s (%d)\n", pszHeader, pPasswd->pw_name, uid);
+}
+
+void PrintGroup (const char *pszHeader, gid_t gid)
+{
+    struct group *pGroup = NULL;
+
+    if (NULL == pszHeader)
+        return;
+
+    pGroup = getgrgid (gid);
+
+    if (NULL == pGroup)
+        return;
+
+    if (pGroup->gr_name)
+        printf ("%s: %s (%d)\n", pszHeader, pGroup->gr_name, gid);
+}
+
+
+void DumpUser (const char *pszHeader)
+{
+    uid_t uid = getuid();
+    gid_t gid = getgid();
+
+    uid_t euid = geteuid();
+    gid_t egid = getegid();
+
+    if (pszHeader && *pszHeader)
+    {
+        printf ("--- %s ---\n", pszHeader);
+    }
+
+    PrintUser  (" uid", uid);
+    PrintUser  ("euid", euid);
+    PrintGroup (" gid", gid);
+    PrintGroup ("egid", egid);
+
+    printf ("\n");
+}
+
+void DumpEnvironment (const char *pszHeader)
+{
+    char **e = environ;
+
+    if (pszHeader && *pszHeader)
+    {
+        printf ("--- %s ---\n", pszHeader);
+    }
+
+    while (*e)
+    {
+        printf ("%s\n", *e);
+        e++;
+    }
+
+    printf ("\n");
+}
+
+
+int SwitchUser (uid_t new_uid, gid_t new_gid, bool bSetEnv)
+{
+    uid_t uid  = getuid();
+    gid_t gid  = getgid();
+    uid_t euid = geteuid();
+    gid_t egid = getegid();
+
+    int upd = 0;
+
+    struct passwd *pPasswd = NULL;
+
+    if ((new_gid != gid) || (new_gid != egid))
+    {
+        if (setregid (new_gid, new_gid))
+        {
+            perror ("Failed to switch group\n");
+            return 1;
+        }
+
+        upd++;
+    }
+
+    if ((new_uid != uid) || (new_uid != euid))
+    {
+        if (setreuid (new_uid, new_uid))
+        {
+            perror ("Failed to switch user\n");
+            return 1;
+        }
+
+        upd++;
+    }
+
+    if (0 == upd)
+        return 0;
+
+    if (false == bSetEnv)
+        return 0;
+
+    pPasswd = getpwuid (euid);
+
+    if (NULL == pPasswd)
+        return 1;
+
+    if (pPasswd->pw_name)
+    {
+        setenv ("USER",   pPasswd->pw_name, 1);
+        setenv ("LOGNAME", pPasswd->pw_name, 1);
+    }
+
+    if (pPasswd->pw_dir)
+    {
+        setenv ("HOME", pPasswd->pw_dir, 1);
+    }
+
+    return 0;
+}
+
+int SwitchToUser (bool bSetEnv)
+{
+    return SwitchUser (g_uid, g_gid, bSetEnv);
+}
+
+
+int SwitchToRealUser (bool bSetEnv)
+{
+    return SwitchUser (g_euid, g_egid, bSetEnv);
+}
 
 
 int SetEnvironmentVars()
 {
-    int ret = 0;
-    int error = 0;
+    int  ret = 0;
+    int  error = 0;
+    bool bPassCmd = false;
     ssize_t ret_size     = 0;
     char szExe[2048]     = {0};
     char szCommand[2100] = {0};
 
-    if (*g_szPassphrase)
-        error = setenv ("BORG_PASSPHRASE", g_szPassphrase, 1);
-    else
-        error = unsetenv ("BORG_PASSPHRASE");
-
-    if (error)
-        ret++;
-
-    ret_size = readlink ("/proc/self/exe", szExe, sizeof (szExe));
-
-    if (ret_size)
+    if (g_szPassCommand)
     {
-        snprintf (szCommand, sizeof (szCommand), "%s -pwd", szExe);
+        /* set own program as password command */
+        if (0 == strcmp ("nshborg", g_szPassCommand))
+        {
+            ret_size = readlink ("/proc/self/exe", szExe, sizeof (szExe));
+
+            if (ret_size)
+            {
+                snprintf (szCommand, sizeof (szCommand), "%s -GETPW", szExe);
+            }
+        }
+        else
+        {
+            snprintf (szCommand, sizeof (szCommand), "%s", g_szPassCommand);
+        }
+    }
+
+    if (*szCommand)
+    {
         error = setenv ("BORG_PASSCOMMAND", szCommand, 1);
+        if (error)
+            ret++;
+        else
+            bPassCmd = true;
     }
     else
+    {
+        /* Only set pass phrase if no pass command is specified */
+        if (*g_szPassphrase)
+            error = setenv ("BORG_PASSPHRASE", g_szPassphrase, 1);
+        else
+            error = unsetenv ("BORG_PASSPHRASE");
+
+        if (error)
+            ret++;
+    }
+
+    if (false == bPassCmd)
     {
         error = unsetenv ("BORG_PASSCOMMAND");
     }
-
-    if (error)
-        ret++;
 
     if (*g_szBorgRepo)
         error = setenv ("BORG_REPO", g_szBorgRepo, 1);
     else
         error = unsetenv ("BORG_REPO");
+
+    if (error)
+        ret++;
+
+    if (*g_szSSHAuthSock)
+        error = setenv (g_szSSH_AUTH_SOCK, g_szSSHAuthSock, 1);
+    else
+        error = unsetenv (g_szSSH_AUTH_SOCK);
 
     if (error)
         ret++;
@@ -262,6 +446,19 @@ bool IsNullStr (const char *pszStr)
 }
 
 
+void strdncpy (char *pszStr, const char *ct, size_t n)
+{
+    if (NULL == pszStr)
+        return;
+
+    if (n>0)
+    {
+        strncpy (pszStr, ct, n-1);
+        pszStr[n-1] = '\0';
+    }
+}
+
+
 size_t GetFileSize (const char *pszFilename)
 {
     int ret = 0;
@@ -281,6 +478,48 @@ size_t GetFileSize (const char *pszFilename)
     return Filestat.st_size;
 }
 
+size_t ReadFileIntoBuffer (const char *pszFilename, size_t BufferSize, char *retpszBuffer)
+{
+    size_t len       = 0;
+    size_t bytesread = 0;
+    
+    FILE *fp = NULL;
+
+    if (0 == BufferSize)
+        return 0;
+
+    if (retpszBuffer)
+        *retpszBuffer = '\0';
+
+    if (IsNullStr (pszFilename))
+        return 0;
+
+    len = GetFileSize (pszFilename);
+
+    if (len >= BufferSize)
+      len = BufferSize-1;
+
+    fp = fopen (pszFilename, "r");
+
+    if (NULL == fp)
+    {
+        printf ("Cannot read file: %s\n", pszFilename);
+        goto Done;
+    }
+
+    bytesread = fread (retpszBuffer, 1, BufferSize, fp);
+    retpszBuffer[bytesread] = '\0';
+
+Done:
+
+    if (fp)
+    {
+        fclose (fp);
+        fp = NULL;
+    }
+
+    return len;
+}
 
 int FileExists (const char *pszFilename)
 {
@@ -455,18 +694,22 @@ Done:
 pid_t CheckProcessRunning()
 {
     int  count = 0;
-    int  len   = 0;
     long pid   = 0;
     FILE *fp   = NULL;
 
     char szProcName[1024] = {0};
-    char szExe[1024]      = {0};
+
+    if (g_Verbose)
+        printf ("PID file: %s\n", g_szFilePID);
 
     fp = fopen (g_szFilePID, "r");
 
     if (NULL == fp)
     {
         /* No logging of no pid file */
+        if (g_Verbose)
+            perror ("Cannot open PID file");
+
         goto Done;
     }
 
@@ -478,13 +721,11 @@ pid_t CheckProcessRunning()
         goto Done;
     }
 
-    snprintf (szProcName, sizeof (szProcName)-1, "/proc/%ld/exe", pid);
+    snprintf (szProcName, sizeof (szProcName)-1, "/proc/%ld", pid);
 
-    len = readlink (szProcName, szExe, sizeof (szExe)-1);
-
-    if (len <= 0)
+    if (FileExists (szProcName) < 0)
     {
-        printf ("nshborg process PID: %ld not found\n", pid);
+        printf ("nshborg process PID: %ld not found (%s)\n", pid, szProcName);
         pid = 0;
         goto Done;
     }
@@ -985,8 +1226,9 @@ int BackupFileToBorg (const char *pszFilename, const char *pszReqFile, long Time
 
         if (ret)
         {
+            perror ("Cannot backup file");
             printf ("Backup ERROR: Cannot backup file: %s\n", pszFilename);
-            goto Done;
+            // goto Done;
         }
 
         printf ("Backing up file %s, size: %ld bytes\n", pszFilename, sb.st_size);
@@ -1051,24 +1293,306 @@ Done:
 }
 
 
+int BorgBackupInitRepo (const char *pszRepository)
+{
+    int ret = 0;
+    int InputFD  = -1;
+    int OutputFD = -1;
+    int ErrorFD  = -1;
+
+    pid_t   pid       =  0;
+    ssize_t BytesRead = 0;
+
+    const char *args[] = { g_szBorgBackupBinary, "init", "--encryption", "repokey", pszRepository, NULL };
+
+    if (IsNullStr (pszRepository))
+    {
+        ret = 1;
+        goto Done;
+    }
+
+    SetEnvironmentVars();
+
+    pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 0, args);
+
+    UnsetEnvironmentVars();
+
+    if (pid < 1)
+    {
+        perror ("Restore ERROR: Cannot start Borg process");
+        ret = 1;
+        goto Done;
+    }
+
+Done:
+
+    if (-1 != InputFD)
+    {
+        ret = close (InputFD);
+        InputFD = -1;
+    }
+
+    if (-1 != OutputFD)
+    {
+        ret = close (OutputFD);
+        OutputFD = -1;
+    }
+
+    if (-1 != ErrorFD)
+    {
+        /* Write potential error output into log */
+        BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1);
+        if (BytesRead > 0)
+        {
+            g_Buffer[BytesRead] = '\0';
+            printf ("%s\n", g_Buffer);
+        }
+
+        ret = close (ErrorFD);
+        ErrorFD = -1;
+    }
+
+    if (pid > 0)
+    {
+        ret = pclose3 (pid);
+        pid = 0;
+    }
+
+    if (ret)
+    {
+        printf ("ERROR initializing archive\n");
+    }
+
+    return ret;
+}
+
+
+int GetTokenFromString (char *pszBuffer, const char *pszToken, int MaxValueSize, char *retpszValue)
+{
+    int  len = 0;
+    char *p  = NULL;
+    char *r  = retpszValue;
+
+    if ((0 == MaxValueSize) || (NULL == pszBuffer) || (NULL == pszToken) || (NULL == retpszValue))
+        return 0;
+
+    p = strstr (pszBuffer, pszToken);
+
+    if (NULL == p)
+        return 0;
+
+    MaxValueSize--;
+
+    p += strlen (pszToken)+1;
+
+    while (len < MaxValueSize)
+    {
+        if (';' == *p)
+            break;
+
+        *r = *p;
+        r++;
+        p++;
+    }
+
+    *r = '\0';
+
+    return len;
+}
+
+
+int StartSSHAgent ()
+{
+    int ret = 0;
+    int InputFD  = -1;
+    int OutputFD = -1;
+    int ErrorFD  = -1;
+
+    pid_t   pid  =  0;
+    ssize_t BytesRead = 0;
+
+    char szNum[20] = {0};
+    const char *args[] = { g_szSSHAgentBinary, "-t", szNum, "-s", NULL };
+
+    printf ("Starting SSH Agent ...\n");
+
+    snprintf (szNum, sizeof (szNum), "%d", g_SSHKeyLife);
+
+    pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 0, args);
+
+    if (pid < 1)
+    {
+        perror ("Cannot start SSH Agent");
+        ret = 1;
+        goto Done;
+    }
+
+    printf ("SSH Agent started\n");
+
+Done:
+
+    if (-1 != InputFD)
+    {
+        ret = close (InputFD);
+        InputFD = -1;
+    }
+
+    if (-1 != OutputFD)
+    {
+        BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer)-1);
+
+        if (BytesRead > 0)
+        {
+            g_Buffer[BytesRead] = '\0';
+
+            GetTokenFromString ((char *) g_Buffer, g_szSSH_AUTH_SOCK, sizeof (g_szSSHAuthSock), g_szSSHAuthSock);
+            GetTokenFromString ((char *) g_Buffer, g_szSSH_AGENT_PID, sizeof (szNum), szNum);
+            g_SSHAgentPID = atoi (szNum);
+
+            if (g_Verbose)
+                printf ("SSH Agent Sock: [%s] PID: %d\n", g_szSSHAuthSock, g_SSHAgentPID);
+        }
+
+        ret = close (OutputFD);
+        OutputFD = -1;
+    }
+
+    if (-1 != ErrorFD)
+    {
+        /* Write potential error output into log */
+        BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1);
+        if (BytesRead > 0)
+        {
+            g_Buffer[BytesRead] = '\0';
+            printf ("%s\n", g_Buffer);
+        }
+
+        ret = close (ErrorFD);
+        ErrorFD = -1;
+    }
+
+    if (pid > 0)
+    {
+        ret = pclose3 (pid);
+        pid = 0;
+    }
+
+    if (ret)
+    {
+        printf ("ERROR starting SSH agent\n");
+    }
+
+    return ret;
+}
+
+
+int PushToSSHAgent()
+{
+    int ret = 0;
+    int InputFD  = -1;
+    int OutputFD = -1;
+    int ErrorFD  = -1;
+
+    pid_t   pid       = 0;
+    ssize_t BytesRead = 0;
+
+    const char *args[] = { g_szSSHAddBinary, "-", NULL };
+
+    if (!*g_szSSHKey)
+    {
+        ret = 1;
+        goto Done;
+    }
+
+    if (0 == g_SSHAgentPID)
+    {
+        ret = StartSSHAgent();
+        if (ret)
+            goto Done;
+    }
+
+    SetEnvironmentVars();
+
+    pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 0, args);
+
+    UnsetEnvironmentVars();
+
+    if (pid < 1)
+    {
+        perror ("Cannot add SSH key");
+        ret = 1;
+        goto Done;
+    }
+
+    write (InputFD, g_szSSHKey, strlen (g_szSSHKey));
+
+Done:
+
+    if (-1 != InputFD)
+    {
+        ret = close (InputFD);
+        InputFD = -1;
+    }
+
+    if (-1 != OutputFD)
+    {
+        BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer)-1);
+        if (BytesRead > 0)
+        {
+            g_Buffer[BytesRead] = '\0';
+            printf ("%s\n", g_Buffer);
+        }
+
+        ret = close (OutputFD);
+        OutputFD = -1;
+    }
+
+    if (-1 != ErrorFD)
+    {
+        /* Write potential error output into log */
+        BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1);
+        if (BytesRead > 0)
+        {
+            g_Buffer[BytesRead] = '\0';
+            printf ("%s\n", g_Buffer);
+        }
+
+        ret = close (ErrorFD);
+        ErrorFD = -1;
+    }
+
+    if (pid > 0)
+    {
+        ret = pclose3 (pid);
+        pid = 0;
+    }
+
+    if (ret)
+    {
+        printf ("ERROR pushing key to SSH Agent\n");
+    }
+
+    return ret;
+}
+
+
 int BorgBackupRestore (const char *pszArchiv, const char *pszSource, const char *pszTarget)
 {
     int ret = 0;
+    pid_t pid      =  0;
     FILE *fpOutput = NULL;
     
     ssize_t BytesRead    = 0;
     ssize_t BytesWritten = 0;
     size_t  BytesTotal   = 0;
 
-    time_t tStart  = {0};
-    time_t tEnd    = {0};
-    double sec     = 0.0;
-    double mb      = 0.0;
-
-    pid_t pid      =  0;
-    int   InputFD  = -1;
-    int   OutputFD = -1;
-    int   ErrorFD  = -1;
+    time_t tStart   = {0};
+    time_t tEnd     = {0};
+    double sec      = 0.0;
+    double mb       = 0.0;
+    int    InputFD  = -1;
+    int    OutputFD = -1;
+    int    ErrorFD  = -1;
 
     const char *args[] = { g_szBorgBackupBinary, "extract", "--stdout", pszArchiv, pszSource , NULL };
 
@@ -1215,45 +1739,211 @@ int GetPassword()
     if (0 == ret_size)
         goto Done;
 
-    if (strcmp (szExe, "/usr/bin/borg"))
+    if (strcmp (szExe, g_szBorgBackupBinary))
         goto Done;
 
-    printf ("%s\n", g_szBorgPWD);
+    printf ("%s\n", g_szPassphrase);
 
 Done:
 
     return 0;
-
 }
+
+
+int GetParam (const char *pszParamName, const char *pszName, const char *pszValue, int BufferSize, char *retpszBuffer)
+{
+    if (IsNullStr (pszName))
+        return 0;
+
+    if (NULL == pszValue)
+        return 0;
+
+    if (NULL == retpszBuffer)
+        return 0;
+
+    if (0 == BufferSize)
+        return 0;
+
+    if (strcmp (pszParamName, pszName))
+        return 0;
+
+    strdncpy (retpszBuffer, pszValue, BufferSize);
+    return 1;
+}
+
+
+int ReadConfig (const char *pszConfigFile)
+{
+    int  ret = 0;
+    FILE *fp = NULL;
+    char *p  = NULL;
+    char *pszValue = NULL;
+    char szBuffer[4096] = {0};
+    char szNum[20] = {0};
+
+    if (IsNullStr (pszConfigFile))
+    {
+        fprintf (stderr, "No configuration file specified\n");
+        ret = -1;
+        goto Done;
+    }
+
+    fp = fopen (pszConfigFile, "r");
+
+    if (NULL == fp)
+    {
+        fprintf (stderr, "Cannot open configuration file: %s\n", pszConfigFile);
+        ret= -1;
+        goto Done;
+    }
+
+    while ( fgets (szBuffer, sizeof (szBuffer)-1, fp) )
+    {
+        /* Parse for '=' to get value */
+        p = szBuffer;
+        pszValue = NULL;
+        while (*p)
+        {
+            if ('=' == *p)
+            {
+                if (NULL == pszValue)
+                {
+                    *p = '\0';
+                    pszValue = p+1;
+                }
+            }
+            else if (*p < 32)
+            {
+               *p = '\0';
+                break;
+            }
+
+            p++;
+        }
+
+        if (!*szBuffer)
+            continue;
+
+        if ('#' == *szBuffer)
+            continue;
+
+        if (NULL == pszValue)
+        {
+            fprintf (stdout, "Warning - Invalid parameter: [%s]\n", szBuffer);
+            ret++;
+            continue;
+        }
+
+             if ( GetParam ("directory",        szBuffer, pszValue, sizeof (g_nshBorgDir),    g_nshBorgDir  ));
+        else if ( GetParam ("BORG_REPO",        szBuffer, pszValue, sizeof (g_szBorgRepo),    g_szBorgRepo  ));
+        else if ( GetParam ("BORG_PASSPHRASE",  szBuffer, pszValue, sizeof (g_szPassphrase),  g_szPassphrase));
+        else if ( GetParam ("BORG_PASSCOMMAND", szBuffer, pszValue, sizeof (g_szPassCommand), g_szPassCommand));
+        else if ( GetParam ("SSH_KEYFILE",      szBuffer, pszValue, sizeof (g_szSSHKeyFile),  g_szSSHKeyFile));
+        else if ( GetParam ("SSH_KEYLIFE",      szBuffer, pszValue, sizeof (szNum),           szNum))
+        {
+            g_SSHKeyLife = atoi (szNum);
+        }
+        else
+        {
+             fprintf (stdout, "Warning - Invalid configuration parameter: [%s]\n", szBuffer);
+             ret++;
+        }
+
+    } /* while */
+
+Done:
+
+    if (fp)
+    {
+        fclose (fp);
+        fp = NULL;
+    }
+
+    return ret;
+}
+
 
 int main (int argc, char *argv[])
 {
     int ret         = 0;
+    int len         = 0;
     int  consumed   = 1;
     long TimeoutSec = 30*60;
+    bool bInitRepo  = false;
 
     char szDefaultReqFile[MAX_PATH+1] = {0};
+    char szConfigFile[] = "/etc/sysconfig/nshborg.cfg";
 
     const char *pszFilename = NULL;
     const char *pszArchiv   = NULL;
     const char *pszBackup   = NULL;
     const char *pszRestore  = NULL;
     const char *pszTarget   = NULL;
+    const char *pszReqFile  = szDefaultReqFile;
 
-    const char *pszReqFile = szDefaultReqFile;
+    struct passwd *pPasswdEntry = NULL;
 
-    struct passwd *pPasswdEntry = getpwuid (getuid());
- 
-    snprintf (g_nshBorgDir,     sizeof (g_nshBorgDir)-1,     "%s/.nshborg",     pPasswdEntry ? pPasswdEntry->pw_dir : "/tmp");
+    if (0 == g_uid)
+    {
+        ret = 1;
+        printf ("\nRunning as 'root' is not allowed!\n");
+        goto Done;
+    }
+
+    /* Read configuration and SSH key with original user */
+
+    ret = ReadConfig (szConfigFile);
+
+    if (ret < 0)
+    {
+        /* No configuration */
+        goto Done;
+    }
+
+    pPasswdEntry = getpwuid (geteuid());
+
+    if (!*g_szSSHKeyFile && pPasswdEntry)
+        snprintf (g_szSSHKeyFile, sizeof (g_szSSHKeyFile), "%s/.ssh/id_ed25519", pPasswdEntry->pw_dir);
+
+    /* Read SSH private key */
+    if (!*g_szSSHKey)
+    {
+        printf ("Reading key: [%s]\n", g_szSSHKeyFile);
+
+        if (*g_szSSHKeyFile)
+        {
+            len = ReadFileIntoBuffer (g_szSSHKeyFile, sizeof (g_szSSHKey), g_szSSHKey);
+
+            if (0 == len)
+            {
+                ret = 1;
+                goto Done;
+            }
+        }
+    }
+
+    /* Switch to effective user */
+    SwitchToUser (false);
+
+    pPasswdEntry = getpwuid (geteuid());
+
+    if (!*g_nshBorgDir)
+        snprintf (g_nshBorgDir, sizeof (g_nshBorgDir), "%s/.nshborg", pPasswdEntry ? pPasswdEntry->pw_dir : "/tmp");
+
+    snprintf (g_szFilePID,      sizeof (g_szFilePID),      "%s/nshborg.pid",  g_nshBorgDir);
+    snprintf (g_szBorgLogFile,  sizeof (g_szBorgLogFile),  "%s/nshborg.log",  g_nshBorgDir);
+    snprintf (szDefaultReqFile, sizeof (szDefaultReqFile), "%s/.nshborg.reg", g_nshBorgDir);
+
     CreateDirectoryTree (g_nshBorgDir, S_IRWXU);
-
-    snprintf (g_szFilePID,      sizeof (g_szFilePID)-1,      "%s/nshborg.pid",  g_nshBorgDir);
-    snprintf (g_szBorgLogFile,  sizeof (g_szBorgLogFile)-1,  "%s/nshborg.log",  g_nshBorgDir);
-    snprintf (szDefaultReqFile, sizeof (szDefaultReqFile)-1, "%s/.nshborg.reg", g_nshBorgDir);
 
     while (argc > consumed)
     {
-        if  (0 == strcmp (argv[consumed], "-z"))
+        if  (0 == strcmp (argv[consumed], "-i"))
+        {
+            bInitRepo = true;
+        }
+        else if  (0 == strcmp (argv[consumed], "-z"))
+
         {
             consumed++;
             if (consumed >= argc)
@@ -1340,7 +2030,7 @@ int main (int argc, char *argv[])
             g_Verbose++;
         }
 
-        else if  (0 == strcmp (argv[consumed], "-pwd"))
+        else if  (0 == strcmp (argv[consumed], "-GETPW"))
         {
             GetPassword();
             goto Done;
@@ -1362,6 +2052,14 @@ int main (int argc, char *argv[])
 
         consumed++;
     } /* while */
+
+    // LATER: ret = PushToSSHAgent ();
+
+    if (bInitRepo)
+    {
+        ret = BorgBackupInitRepo (g_szBorgRepo);
+        goto Done;
+    }
 
     if (pszRestore)
     {
@@ -1387,6 +2085,13 @@ InvalidSyntax:
     printf ("\nInvalid Syntax!\n\n");
 
 Done:
+
+
+    if (g_SSHAgentPID)
+    {
+        kill (g_SSHAgentPID, SIGKILL);
+        g_SSHAgentPID = 0;
+    }
 
     return ret;
 }
