@@ -1,8 +1,8 @@
 /*
 ###########################################################################
 # Domino Borg Backup Integration                                          #
-# Version 0.9.0 30.11.2023                                                #
-# (C) Copyright Daniel Nashed/NashCom 2023                                #
+# Version 0.9.2 18.03.2024                                                #
+# (C) Copyright Daniel Nashed/NashCom 2023-2024                           #
 #                                                                         #
 # Licensed under the Apache License, Version 2.0 (the "License");         #
 # you may not use this file except in compliance with the License.        #
@@ -44,7 +44,7 @@
 /* Global buffer */
 unsigned char  g_Buffer[MAX_BUFFER+1] = {0};
 
-char  g_szVersion[]          = "0.9.1";
+char  g_szVersion[]          = "0.9.2";
 char  g_szBackupEndMarker[]  = "::BORG-BACKUP-END::";
 char  g_szSSH_AUTH_SOCK[]    = "SSH_AUTH_SOCK";
 char  g_szSSH_AGENT_PID[]    = "SSH_AGENT_PID";
@@ -819,6 +819,7 @@ int BackupFile (int WriteFD, const char *pszFileName)
     size_t  BytesRead    = 0;
     size_t  BytesWritten = 0;
     size_t  BytesTotal   = 0;
+    size_t  BytesSize    = 0;
 
     pid_t  pid      =  0;
     int    InputFD  = -1;
@@ -837,6 +838,15 @@ int BackupFile (int WriteFD, const char *pszFileName)
     if (IsNullStr (pszFileName))
     {
         printf ("Backup ERROR: No file specified\n");
+        ret = 1;
+        goto Done;
+    }
+
+    BytesSize = GetFileSize (pszFileName);
+
+    if (0 == BytesSize)
+    {
+        printf ("Backup ERROR: Cannot backup empty files: %s\n", pszFileName);
         ret = 1;
         goto Done;
     }
@@ -862,6 +872,14 @@ int BackupFile (int WriteFD, const char *pszFileName)
         }
 
         BytesTotal += BytesWritten;
+    }
+
+    BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1);
+    if (BytesRead > 0)
+    {
+        g_Buffer[BytesRead] = '\0';
+        printf ("\nBackup ERROR: Returned from tar\n\n");
+        printf ("%s\n", g_Buffer);
     }
 
     printf ("Backup OK: [%s] %1.1f MB\n", pszFileName, BytesTotal/1024.0/1024.0);
@@ -1006,7 +1024,7 @@ int BorgBackupStart (const char *pszReqFilename, const char *pszArchiv)
                 p = szFileName;
                 while (*p)
                 {
-                    if (*p < 32)
+                    if ('\n' == *p)
                     {
                         *p = '\0';
                         break;
@@ -1099,7 +1117,11 @@ Done:
     }
 
     fprintf (fpLog, "\n");
-    fprintf (fpLog, "Backup OK: BorgBackup completed\n");
+    if (CountErr)
+        fprintf (fpLog, "Backup ERROR: BorgBackup completed with errors\n");
+    else
+        fprintf (fpLog, "Backup OK: BorgBackup completed\n");
+
     fprintf (fpLog, "-------------------------------\n");
     fprintf (fpLog, "Success: %4lu\n", CountOK);
     fprintf (fpLog, "Failure: %4lu\n", CountErr);
@@ -1788,6 +1810,11 @@ int ReadConfig (const char *pszConfigFile)
         goto Done;
     }
 
+    if (0 == FileExists (pszConfigFile))
+    {
+        fprintf (stderr, "Info: No configuration profile found: %s\n", pszConfigFile);
+    }
+
     fp = fopen (pszConfigFile, "r");
 
     if (NULL == fp)
@@ -1902,17 +1929,26 @@ int main (int argc, char *argv[])
 
     pPasswdEntry = getpwuid (geteuid());
 
-    if (!*g_szSSHKeyFile && pPasswdEntry)
-        snprintf (g_szSSHKeyFile, sizeof (g_szSSHKeyFile), "%s/.ssh/id_ed25519", pPasswdEntry->pw_dir);
+    if (0)
+    {
+        /* LATER: Check if we want to use a default Ed25519 key */
+        if (!*g_szSSHKeyFile && pPasswdEntry)
+        {
+            snprintf (g_szSSHKeyFile, sizeof (g_szSSHKeyFile), "%s/.ssh/id_ed25519", pPasswdEntry->pw_dir);
+
+            if (0 == FileExists (g_szSSHKeyFile))
+                *g_szSSHKeyFile = '\0';
+        }
+    }
 
     /* Read SSH private key */
-    if (!*g_szSSHKey)
+    if ((!*g_szSSHKey) && (*g_szSSHKeyFile))
     {
         printf ("Reading key: [%s]\n", g_szSSHKeyFile);
 
         if (*g_szSSHKeyFile)
         {
-            len = ReadFileIntoBuffer (g_szSSHKeyFile, sizeof (g_szSSHKey), g_szSSHKey);
+            len = ReadFileIntoBuffer (g_szSSHKeyFile, sizeof (g_szSSHKeyFile), g_szSSHKey);
 
             if (0 == len)
             {
