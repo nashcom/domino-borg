@@ -93,21 +93,26 @@ The following environment BORG environment variables can be specified in nshborg
 
 See the [Borg documentation](https://borgbackup.readthedocs.io/en/stable/usage/general.html#environment-variables) for details about environment variables.
 
-- **BORG_REPO** Borg repository
-- **BORG_PASSPHRASE** Borg passphrase for repository
-- **BORG_PASSCOMMAND** Borg passphrase credential helper binary
-- **BORG_RSH** Borg ssh command-line
-- **BORG_BASE_DIR** Borg base directory
-- **BORG_REMOTE_PATH** Borg remote binary name for SSH operations
+
+| Parameter     | Description                     | Default |
+| ------------- | ------------------------------- | ------- |
+| BORG_REPO | Borg repository | |
+| BORG_PASSPHRASE | Borg passphrase for repository | |
+| BORG_PASSCOMMAND | Borg passphrase credential helper binary | |
+| BORG_RSH | Borg ssh command-line | |
+| BORG_BASE_DIR | Borg base directory | |
+| BORG_REMOTE_PATH | Borg remote binary name for SSH operations | |
 
 
 ### Other configuration options
 
-- **BORG_BINARY** location of borg binary
-- **SSH_KEYFILE** SSH key file to use for SSH Agent
-- **SSH_KEYLIFE** Life of key file used for SSH Agent
-- **BORG_DELETE_ALLOWED** Allow delete operation (disabled by default)
-- **BORG_MIN_PRUNE_DAYS** Minimum prune days (default: 7)
+| Parameter     | Description                     | Default |
+| ------------- | ------------------------------- | ------- |
+| BORG_BINARY | location of borg binary | |
+| SSH_KEYFILE | SSH key file to use for SSH Agent | |
+| SSH_KEYLIFE | Life of key file used for SSH Agent | |
+| BORG_DELETE_ALLOWED | 1 = Allow delete operation | Disabled |
+| BORG_MIN_PRUNE_DAYS | Minimum prune days | 7 days |
 
 
 ## Coexisting with existing backups
