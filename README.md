@@ -94,8 +94,8 @@ The following environment BORG environment variables can be specified in nshborg
 See the [Borg documentation](https://borgbackup.readthedocs.io/en/stable/usage/general.html#environment-variables) for details about environment variables.
 
 
-|Parameter     |Description                     |Default |
-| ------------- | ------------------------------- | ------- |
+| Parameter     | Description                       | Default |
+| :------------- | :------------------------------- | :------- |
 | BORG_REPO | Borg repository | |
 | BORG_PASSPHRASE | Borg passphrase for repository | |
 | BORG_PASSCOMMAND | Borg passphrase credential helper binary | |
@@ -106,8 +106,8 @@ See the [Borg documentation](https://borgbackup.readthedocs.io/en/stable/usage/g
 
 ### Other configuration options
 
-|Parameter     |Description                     |Default |
-| ------------- | ------------------------------- | ------- |
+| Parameter      |Description                       | Default |
+| :------------- | :------------------------------- | :------- |
 | BORG_BINARY | location of borg binary | |
 | SSH_KEYFILE | SSH key file to use for SSH Agent | |
 | SSH_KEYLIFE | Life of key file used for SSH Agent | |
