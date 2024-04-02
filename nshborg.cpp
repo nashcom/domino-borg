@@ -2325,7 +2325,10 @@ int main (int argc, char *argv[])
         goto Done;
     }
 
-    ret = PushToSSHAgent();
+    if (*g_szSSHKey)
+    {
+        ret = PushToSSHAgent();
+    }
 
     if (bInitRepo)
     {
