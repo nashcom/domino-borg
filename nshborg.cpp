@@ -232,7 +232,7 @@ int SetEnvironmentVars()
         {
             ret_size = readlink ("/proc/self/exe", szExe, sizeof (szExe));
 
-            if (ret_size)
+            if (ret_size > 0)
             {
                 snprintf (szCommand, sizeof (szCommand), "%s -GETPW", szExe);
             }
@@ -1758,7 +1758,7 @@ int GetPassword()
     snprintf (szProcess, sizeof (szProcess), "/proc/%d/exe", ppid);
 
     ret_size = readlink (szProcess, szExe, sizeof (szExe));
-    if (0 == ret_size)
+    if (0 <= ret_size)
         goto Done;
 
     if (strcmp (szExe, g_szBorgBackupBinary))
