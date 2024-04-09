@@ -1,7 +1,7 @@
 /*
 ###########################################################################
 # Domino Borg Backup Integration                                          #
-# Version 0.9.3 30.03.2024                                                #
+# Version 0.9.4 09.04.2024                                                #
 # (C) Copyright Daniel Nashed/NashCom 2023-2024                           #
 #                                                                         #
 # Licensed under the Apache License, Version 2.0 (the "License");         #
@@ -44,7 +44,7 @@
 /* Global buffer used for all I/O */
 unsigned char  g_Buffer[MAX_BUFFER+1] = {0};
 
-char  g_szVersion[]          = "0.9.3";
+char  g_szVersion[]          = "0.9.4";
 char  g_szBackupEndMarker[]  = "::BORG-BACKUP-END::";
 char  g_szSSH_AUTH_SOCK[]    = "SSH_AUTH_SOCK";
 char  g_szSSH_AGENT_PID[]    = "SSH_AGENT_PID";
@@ -886,6 +886,13 @@ int BackupFile (int WriteFD, const char *pszFileName)
         goto Done;
     }
 
+    if (-1 == WriteFD)
+    {
+        perror ("Backup ERROR: No output file pointer returned");
+        ret = 1;
+        goto Done;
+    }
+
     while ((BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer))))
     {
         BytesWritten = write (WriteFD, g_Buffer, BytesRead);
@@ -1570,7 +1577,93 @@ Done:
 
     if (ret)
     {
-        printf ("ERROR initializing archive\n");
+        printf ("ERROR initializing repo\n");
+    }
+
+    return ret;
+}
+
+
+int BorgBackupList (const char *pszArchiv)
+{
+    int ret = 0;
+    int InputFD  = -1;
+    int OutputFD = -1;
+    int ErrorFD  = -1;
+
+    pid_t   pid       =  0;
+    ssize_t BytesRead = 0;
+
+    const char *args[] = { g_szBorgBackupBinary, "list", pszArchiv, NULL };
+
+    if (IsNullStr (pszArchiv))
+    {
+        ret = 1;
+        goto Done;
+    }
+
+    SetEnvironmentVars();
+
+    pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 0, args);
+
+    UnsetEnvironmentVars();
+
+    if (pid < 1)
+    {
+        perror ("Backup ERROR: Cannot start Borg process");
+        ret = 1;
+        goto Done;
+    }
+
+    if (-1 == OutputFD)
+    {
+        perror ("Backup ERROR: No output file pointer returned");
+        ret = 1;
+        goto Done;
+    }
+
+    while ((BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer))))
+    {
+        write (1, g_Buffer, BytesRead);
+    }
+
+Done:
+
+    if (-1 != InputFD)
+    {
+        ret = close (InputFD);
+        InputFD = -1;
+    }
+
+    if (-1 != OutputFD)
+    {
+        ret = close (OutputFD);
+        OutputFD = -1;
+    }
+
+    if (-1 != ErrorFD)
+    {
+        /* Write potential error output into log */
+        BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1);
+        if (BytesRead > 0)
+        {
+            g_Buffer[BytesRead] = '\0';
+            printf ("%s\n", g_Buffer);
+        }
+
+        ret = close (ErrorFD);
+        ErrorFD = -1;
+    }
+
+    if (pid > 0)
+    {
+        ret = pclose3 (pid);
+        pid = 0;
+    }
+
+    if (ret)
+    {
+        printf ("ERROR listing archive\n");
     }
 
     return ret;
@@ -1946,7 +2039,7 @@ int GetPassword()
     snprintf (szProcess, sizeof (szProcess), "/proc/%d/exe", ppid);
 
     ret_size = readlink (szProcess, szExe, sizeof (szExe));
-    if (0 <= ret_size)
+    if (ret_size <= 0)
         goto Done;
 
     if (strcmp (szExe, g_szBorgBackupBinary))
@@ -2188,9 +2281,25 @@ int main (int argc, char *argv[])
             goto Done;
         }
 
-        else if (0 == strcmp (argv[consumed], "-i"))
+        else if ((0 == strcmp (argv[consumed], "-i")) || (0 == strcmp (argv[consumed], "init")))
         {
             bInitRepo = true;
+        }
+
+        else if ((0 == strcmp (argv[consumed], "-l")) || (0 == strcmp (argv[consumed], "list")))
+        {
+            consumed++;
+            if (consumed >= argc)
+                goto InvalidSyntax;
+            if (argv[consumed][0] == '-')
+                goto InvalidSyntax;
+
+            if ((0 == strcmp (argv[consumed], "repo")) || (0 == strcmp (argv[consumed], ".")))
+                BorgBackupList (g_szBorgRepo);
+            else
+                BorgBackupList (argv[consumed]);
+
+            goto Done;
         }
 
         else if (0 == strcmp (argv[consumed], "-z"))
