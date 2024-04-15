@@ -191,7 +191,7 @@ int SwitchUser (uid_t new_uid, gid_t new_gid, bool bSetEnv)
     if (false == bSetEnv)
         return 0;
 
-    pPasswd = getpwuid (euid);
+    pPasswd = getpwuid (getuid());
 
     if (NULL == pPasswd)
         return 1;
