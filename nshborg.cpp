@@ -983,8 +983,10 @@ int PushToSSHAgent()
     int OutputFD = -1;
     int ErrorFD  = -1;
 
-    pid_t   pid       = 0;
-    ssize_t BytesRead = 0;
+    pid_t   pid        = 0;
+    ssize_t BytesRead  = 0;
+    ssize_t BytesWrite = 0;
+    ssize_t len        = 0;
 
     const char *args[] = { g_szSSHAddBinary, "-", NULL };
 
@@ -1028,7 +1030,15 @@ int PushToSSHAgent()
         goto Done;
     }
 
-    write (InputFD, g_szSSHKey, strlen (g_szSSHKey));
+    len = strlen (g_szSSHKey);
+    BytesWrite = write (InputFD, g_szSSHKey, len);
+
+    if (len != BytesWrite)
+    {
+        perror ("Incomplete write to SSH Agent STDIN");
+        ret = 1;
+        goto Done;
+    }
 
 Done:
 
@@ -1083,10 +1093,10 @@ Done:
 int BackupFile (int WriteFD, const char *pszFileName)
 {
     int ret = 0;
-    size_t  BytesRead    = 0;
-    size_t  BytesWritten = 0;
-    size_t  BytesTotal   = 0;
-    size_t  BytesSize    = 0;
+    size_t  BytesRead  = 0;
+    size_t  BytesWrite = 0;
+    size_t  BytesTotal = 0;
+    size_t  BytesSize  = 0;
 
     pid_t  pid      =  0;
     int    InputFD  = -1;
@@ -1136,16 +1146,16 @@ int BackupFile (int WriteFD, const char *pszFileName)
 
     while ((BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer))))
     {
-        BytesWritten = write (WriteFD, g_Buffer, BytesRead);
+        BytesWrite = write (WriteFD, g_Buffer, BytesRead);
 
-        if (BytesRead != BytesWritten)
+        if (BytesRead != BytesWrite)
         {
-            printf ("Backup ERROR: Error writing buffer, Read: %lu, Written: %lu\n", BytesRead, BytesWritten);
+            printf ("Backup ERROR: Error writing buffer, Read: %lu, Written: %lu\n", BytesRead, BytesWrite);
             ret = 1;
             goto Done;
         }
 
-        BytesTotal += BytesWritten;
+        BytesTotal += BytesWrite;
     }
 
     BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1);
@@ -1196,7 +1206,8 @@ int BorgBackupPrune (long PruneDays)
     int   OutputFD  = -1;
     int   ErrorFD   = -1;
 
-    ssize_t BytesRead = 0;
+    ssize_t BytesRead     = 0;
+    ssize_t BytesWrite    = 0;
     char  szPruneStr[255] = {0};
 
     const char *args[] = { g_szBorgBackupBinary, "prune", "--stats", szPruneStr, NULL };
@@ -1228,7 +1239,13 @@ int BorgBackupPrune (long PruneDays)
         while ((BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer)-1)))
         {
             g_Buffer[BytesRead] = '\0';
-            write (1, g_Buffer, BytesRead);
+            BytesWrite = write (1, g_Buffer, BytesRead);
+
+            if (BytesRead != BytesWrite)
+            {
+                perror ("Warning: Incomplete buffer write");
+            }
+
             usleep (10*1000);
         }
     }
@@ -1238,7 +1255,13 @@ int BorgBackupPrune (long PruneDays)
         while ((BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1)))
         {
             g_Buffer[BytesRead] = '\0';
-            write (2, g_Buffer, BytesRead);
+            BytesWrite = write (2, g_Buffer, BytesRead);
+
+            if (BytesRead != BytesWrite)
+            {
+                perror ("Warning: Incomplete buffer write");
+            }
+
             usleep (10*1000);
         }
     }
@@ -1283,7 +1306,8 @@ int BorgBackupDelete (const char *pszArchiv)
     int   OutputFD  = -1;
     int   ErrorFD   = -1;
 
-    ssize_t BytesRead = 0;
+    ssize_t BytesRead  = 0;
+    ssize_t BytesWrite = 0;
 
     const char *args[] = { g_szBorgBackupBinary, "delete", "--stats", pszArchiv, NULL };
 
@@ -1319,7 +1343,13 @@ int BorgBackupDelete (const char *pszArchiv)
         while ((BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer)-1)))
         {
             g_Buffer[BytesRead] = '\0';
-            write (1, g_Buffer, BytesRead);
+            BytesWrite = write (1, g_Buffer, BytesRead);
+
+            if (BytesRead != BytesWrite)
+            {
+                perror ("Warning: Incomplete buffer write");
+            }
+
             usleep (10*1000);
         }
     }
@@ -1329,12 +1359,18 @@ int BorgBackupDelete (const char *pszArchiv)
         while ((BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1)))
         {
             g_Buffer[BytesRead] = '\0';
-            write (2, g_Buffer, BytesRead);
+            BytesWrite = write (2, g_Buffer, BytesRead);
+ 
+            if (BytesRead != BytesWrite)
+            {
+                perror ("Warning: Incomplete buffer write");
+            }
+
             usleep (10*1000);
 
             if (strstr ((char *)g_Buffer, "not found"))
             {
-                printf ("\nBackup ERROR: Cannot start Borg process\n\n");
+                printf ("\nBackup ERROR: Cannot find archive to delete\n\n");
                 ret = -1;
             }
         }
@@ -1385,6 +1421,7 @@ int BorgBackupCreate (int argc, char *argv[])
     size_t ArgSize   =  ArgCount * sizeof (char *);
 
     ssize_t BytesRead   = 0;
+    ssize_t BytesWrite  = 0;
     const char **ppArgs = NULL;
 
     /* Allocate variable argument list pointer */
@@ -1427,7 +1464,13 @@ int BorgBackupCreate (int argc, char *argv[])
         while ((BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer)-1)))
         {
             g_Buffer[BytesRead] = '\0';
-            write (1, g_Buffer, BytesRead);
+            BytesWrite = write (1, g_Buffer, BytesRead);
+
+            if (BytesRead != BytesWrite)
+            {
+                perror ("Warning: Incomplete buffer write");
+            }
+
             usleep (10*1000);
         }
     }
@@ -1438,7 +1481,13 @@ int BorgBackupCreate (int argc, char *argv[])
         while ((BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1)))
         {
             g_Buffer[BytesRead] = '\0';
-            write (2, g_Buffer, BytesRead);
+            BytesWrite = write (2, g_Buffer, BytesRead);
+
+            if (BytesRead != BytesWrite)
+            {
+                perror ("Warning: Incomplete buffer write");
+            }
+
             usleep (10*1000);
         }
     }
@@ -1553,7 +1602,7 @@ int BorgBackupStart (const char *pszReqFilename, const char *pszArchiv)
         if (BytesRead > 0)
         {
             g_Buffer[BytesRead] = '\0';
-            printf ("\nBackup ERROR: Cannot start Borg process\n\n");
+            printf ("\nBackup ERROR: Cannot read from Borg process\n\n");
             printf ("%s\n", g_Buffer);
             goto Done;
         }
@@ -1961,8 +2010,9 @@ int BorgBackupList (const char *pszArchiv)
     int OutputFD = -1;
     int ErrorFD  = -1;
 
-    pid_t   pid       =  0;
-    ssize_t BytesRead = 0;
+    pid_t   pid        = 0;
+    ssize_t BytesRead  = 0;
+    ssize_t BytesWrite = 0;
 
     const char *args[] = { g_szBorgBackupBinary, "list", pszArchiv, NULL };
 
@@ -1994,7 +2044,12 @@ int BorgBackupList (const char *pszArchiv)
 
     while ((BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer))))
     {
-        write (1, g_Buffer, BytesRead);
+        BytesWrite = write (1, g_Buffer, BytesRead);
+
+        if (BytesRead != BytesWrite)
+        {
+            perror ("Warning: Incomplete buffer write");
+        }
     }
 
 Done:
@@ -2046,9 +2101,9 @@ int BorgBackupRestore (const char *pszArchiv, const char *pszSource, const char 
     pid_t pid      =  0;
     FILE *fpOutput = NULL;
     
-    ssize_t BytesRead    = 0;
-    ssize_t BytesWritten = 0;
-    size_t  BytesTotal   = 0;
+    ssize_t BytesRead  = 0;
+    ssize_t BytesWrite = 0;
+    size_t  BytesTotal = 0;
 
     time_t tStart   = {0};
     time_t tEnd     = {0};
@@ -2111,19 +2166,19 @@ int BorgBackupRestore (const char *pszArchiv, const char *pszSource, const char 
 
     while ((BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer))))
     {
-        BytesWritten = fwrite (g_Buffer, 1, BytesRead, fpOutput);
+        BytesWrite = fwrite (g_Buffer, 1, BytesRead, fpOutput);
 
-        if (BytesRead != BytesWritten)
+        if (BytesRead != BytesWrite)
         {
-            printf ("Restore ERROR: Cannot write buffer, Read: %lu, Written: %lu\n", BytesRead, BytesWritten);
+            printf ("Restore ERROR: Cannot write buffer, Read: %lu, Written: %lu\n", BytesRead, BytesWrite);
             ret = 1;
             goto Done;
         }
 
-        BytesTotal += BytesWritten;
+        BytesTotal += BytesWrite;
     }
 
-    if (0 == BytesWritten)
+    if (0 == BytesWrite)
     {
         ret = 1;
         goto Done;

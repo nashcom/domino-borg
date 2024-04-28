@@ -13,10 +13,10 @@ PROGRAM=nshborg
 all: $(PROGRAM)
 
 $(PROGRAM): $(PROGRAM).o
-	$(CC) -o $(PROGRAM) $(PROGRAM).o $(LIBS) -o $(PROGRAM)
+	$(CC) $(PROGRAM).o $(LIBS) -o $(PROGRAM)
 
 $(PROGRAM).o: $(PROGRAM).cpp
-	$(CC)  $(CFLAGS) $(PROGRAM).cpp -DLINUX -DUNIX
+	$(CC)  $(CFLAGS) $(PROGRAM).cpp -DLINUX -DUNIX -O1 #-D_FORTIFY_SOURCE=3
 
 clean:
 	rm -f $(PROGRAM) *.o
