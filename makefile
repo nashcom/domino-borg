@@ -31,3 +31,8 @@ install: all
 uninstall:
 	sudo rm -f /usr/bin/$(PROGRAM)
 	$(MAKE) clean
+
+publish: all
+	mkdir -p /local/software/nashcom.de/linux-bin
+	cp -f ./$(PROGRAM) /local/software/nashcom.de/linux-bin
+
