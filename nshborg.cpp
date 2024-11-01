@@ -1,7 +1,7 @@
 /*
 ###########################################################################
 # Domino Borg Backup Integration                                          #
-# Version 0.9.3 30.03.2024                                                #
+# Version 0.9.4 09.04.2024                                                #
 # (C) Copyright Daniel Nashed/NashCom 2023-2024                           #
 #                                                                         #
 # Licensed under the Apache License, Version 2.0 (the "License");         #
@@ -44,7 +44,7 @@
 /* Global buffer used for all I/O */
 unsigned char  g_Buffer[MAX_BUFFER+1] = {0};
 
-char  g_szVersion[]          = "0.9.3";
+char  g_szVersion[]          = "0.9.5";
 char  g_szBackupEndMarker[]  = "::BORG-BACKUP-END::";
 char  g_szSSH_AUTH_SOCK[]    = "SSH_AUTH_SOCK";
 char  g_szSSH_AGENT_PID[]    = "SSH_AGENT_PID";
@@ -57,6 +57,7 @@ char  g_szBorgRepo[MAX_PATH+1]         = "/local/backup/borg";
 char  g_nshBorgDir[1024+1]             = {0};
 char  g_szFilePID[MAX_PATH+1]          = {0};
 char  g_szBorgLogFile[MAX_PATH+1]      = {0};
+char  g_szGetPwdFile[MAX_PATH+1]       = {0};
 char  g_szPassCommand[MAX_PATH+1]      = {0};
 char  g_szBorgRSH[MAX_PATH+1]          = {0};
 char  g_szBaseDir[MAX_PATH+1]          = {0};
@@ -78,6 +79,7 @@ gid_t g_gid  = getgid();
 uid_t g_euid = geteuid();
 gid_t g_egid = getegid();
 
+
 void PrintUser (const char *pszHeader, uid_t uid)
 {
     struct passwd *pPasswd = NULL;
@@ -93,6 +95,7 @@ void PrintUser (const char *pszHeader, uid_t uid)
     if (pPasswd->pw_name)
         printf ("%s: %s (%d)\n", pszHeader, pPasswd->pw_name, uid);
 }
+
 
 void PrintGroup (const char *pszHeader, gid_t gid)
 {
@@ -132,6 +135,7 @@ void DumpUser (const char *pszHeader)
     printf ("\n");
 }
 
+
 void DumpEnvironment (const char *pszHeader)
 {
     char **e = environ;
@@ -148,6 +152,19 @@ void DumpEnvironment (const char *pszHeader)
     }
 
     printf ("\n");
+}
+
+
+void DumpArgs (const char *pszHeader, const char **ppArgs)
+{
+    if (pszHeader)
+        printf ("--- %s ---\n", pszHeader);
+
+    while (*ppArgs)
+    {
+        printf ("[%s]\n", *ppArgs);
+        ppArgs++;
+    }
 }
 
 
@@ -190,7 +207,7 @@ int SwitchUser (uid_t new_uid, gid_t new_gid, bool bSetEnv)
     if (false == bSetEnv)
         return 0;
 
-    pPasswd = getpwuid (euid);
+    pPasswd = getpwuid (getuid());
 
     if (NULL == pPasswd)
         return 1;
@@ -208,6 +225,7 @@ int SwitchUser (uid_t new_uid, gid_t new_gid, bool bSetEnv)
 
     return 0;
 }
+
 
 int SwitchToUser (bool bSetEnv)
 {
@@ -504,6 +522,7 @@ size_t GetFileSize (const char *pszFilename)
     return Filestat.st_size;
 }
 
+
 size_t ReadFileIntoBuffer (const char *pszFilename, size_t BufferSize, char *retpszBuffer)
 {
     size_t len       = 0;
@@ -546,6 +565,7 @@ Done:
 
     return len;
 }
+
 
 int FileExists (const char *pszFilename)
 {
@@ -671,6 +691,40 @@ Done:
     }
 
     return ret;
+}
+
+
+int GetTokenFromString (char *pszBuffer, const char *pszToken, int MaxValueSize, char *retpszValue)
+{
+    int  len = 0;
+    char *p  = NULL;
+    char *r  = retpszValue;
+
+    if ((0 == MaxValueSize) || (NULL == pszBuffer) || (NULL == pszToken) || (NULL == retpszValue))
+        return 0;
+
+    p = strstr (pszBuffer, pszToken);
+
+    if (NULL == p)
+        return 0;
+
+    MaxValueSize--;
+
+    p += strlen (pszToken)+1;
+
+    while (len < MaxValueSize)
+    {
+        if (';' == *p)
+            break;
+
+        *r = *p;
+        r++;
+        p++;
+    }
+
+    *r = '\0';
+
+    return len;
 }
 
 
@@ -839,13 +893,210 @@ Done:
 }
 
 
+int StartSSHAgent()
+{
+    int ret = 0;
+    int InputFD  = -1;
+    int OutputFD = -1;
+    int ErrorFD  = -1;
+
+    pid_t   pid  =  0;
+    ssize_t BytesRead = 0;
+
+    char szNum[20] = {0};
+    const char *args[] = { g_szSSHAgentBinary, "-t", szNum, "-s", NULL };
+
+    snprintf (szNum, sizeof (szNum), "%u", g_SSHKeyLife);
+
+    pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 0, args);
+
+    if (pid < 1)
+    {
+        perror ("Cannot start SSH Agent");
+        ret = 1;
+        goto Done;
+    }
+
+    printf ("Starting SSH Agent with PID: %d\n", pid);
+
+Done:
+
+    if (-1 != InputFD)
+    {
+        close (InputFD);
+        InputFD = -1;
+    }
+
+    if (-1 != OutputFD)
+    {
+        BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer)-1);
+
+        if (BytesRead > 0)
+        {
+            g_Buffer[BytesRead] = '\0';
+
+            GetTokenFromString ((char *) g_Buffer, g_szSSH_AUTH_SOCK, sizeof (g_szSSHAuthSock), g_szSSHAuthSock);
+            GetTokenFromString ((char *) g_Buffer, g_szSSH_AGENT_PID, sizeof (szNum), szNum);
+            g_SSHAgentPID = atoi (szNum);
+
+            if (g_Verbose)
+                printf ("SSH Agent Sock: [%s] PID: %d\n", g_szSSHAuthSock, g_SSHAgentPID);
+        }
+
+        close (OutputFD);
+        OutputFD = -1;
+    }
+
+    if (-1 != ErrorFD)
+    {
+        /* Write potential error output into log */
+        BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1);
+        if (BytesRead > 0)
+        {
+            g_Buffer[BytesRead] = '\0';
+            printf ("%s\n", g_Buffer);
+        }
+
+        close (ErrorFD);
+        ErrorFD = -1;
+    }
+
+    if (pid > 0)
+    {
+        pclose3 (pid);
+        pid = 0;
+    }
+
+    if (ret)
+    {
+        printf ("ERROR starting SSH agent\n");
+    }
+
+    return ret;
+}
+
+
+int PushToSSHAgent()
+{
+    int ret = 0;
+    int InputFD  = -1;
+    int OutputFD = -1;
+    int ErrorFD  = -1;
+
+    pid_t   pid        = 0;
+    ssize_t BytesRead  = 0;
+    ssize_t BytesWrite = 0;
+    ssize_t len        = 0;
+
+    const char *args[] = { g_szSSHAddBinary, "-", NULL };
+
+    if (!*g_szSSHKey)
+    {
+        if (g_Verbose)
+            printf ("Info: No SSH key specified!\n");
+
+        /* Return not successful but not log an error */
+        return 1;
+    }
+
+    if (0 == g_SSHAgentPID)
+    {
+        ret = StartSSHAgent();
+        if (ret)
+            goto Done;
+    }
+    else
+    {
+        printf ("Existing SSH agent process: %d\n", g_SSHAgentPID);
+    }
+
+    if (!*g_szSSHAuthSock)
+    {
+        printf ("No SSH Agent socket defined\n");
+        ret = 1;
+        goto Done;
+    }
+
+    setenv (g_szSSH_AUTH_SOCK, g_szSSHAuthSock, 1);
+
+    pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 0, args);
+
+    unsetenv (g_szSSH_AUTH_SOCK);
+
+    if (pid < 1)
+    {
+        perror ("Cannot add SSH key");
+        ret = 1;
+        goto Done;
+    }
+
+    len = strlen (g_szSSHKey);
+    BytesWrite = write (InputFD, g_szSSHKey, len);
+
+    if (len != BytesWrite)
+    {
+        perror ("Incomplete write to SSH Agent STDIN");
+        ret = 1;
+        goto Done;
+    }
+
+Done:
+
+    if (-1 != InputFD)
+    {
+        close (InputFD);
+        InputFD = -1;
+    }
+
+    if (-1 != OutputFD)
+    {
+        BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer)-1);
+        if (BytesRead > 0)
+        {
+            g_Buffer[BytesRead] = '\0';
+            printf ("%s\n", g_Buffer);
+        }
+
+        close (OutputFD);
+        OutputFD = -1;
+    }
+
+    if (-1 != ErrorFD)
+    {
+        /* Write potential error output into log */
+        BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1);
+        if (BytesRead > 0)
+        {
+            g_Buffer[BytesRead] = '\0';
+            printf ("%s\n", g_Buffer);
+        }
+
+        close (ErrorFD);
+        ErrorFD = -1;
+    }
+
+    if (pid > 0)
+    {
+        pclose3 (pid);
+        pid = 0;
+    }
+
+    if (ret)
+    {
+        printf ("ERROR pushing key to SSH Agent\n");
+    }
+
+    return ret;
+}
+
+
 int BackupFile (int WriteFD, const char *pszFileName)
 {
     int ret = 0;
-    size_t  BytesRead    = 0;
-    size_t  BytesWritten = 0;
-    size_t  BytesTotal   = 0;
-    size_t  BytesSize    = 0;
+    size_t  BytesRead  = 0;
+    size_t  BytesWrite = 0;
+    size_t  BytesTotal = 0;
+    size_t  BytesSize  = 0;
 
     pid_t  pid      =  0;
     int    InputFD  = -1;
@@ -886,18 +1137,25 @@ int BackupFile (int WriteFD, const char *pszFileName)
         goto Done;
     }
 
+    if (-1 == WriteFD)
+    {
+        perror ("Backup ERROR: No output file pointer returned");
+        ret = 1;
+        goto Done;
+    }
+
     while ((BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer))))
     {
-        BytesWritten = write (WriteFD, g_Buffer, BytesRead);
+        BytesWrite = write (WriteFD, g_Buffer, BytesRead);
 
-        if (BytesRead != BytesWritten)
+        if (BytesRead != BytesWrite)
         {
-            printf ("Backup ERROR: Error writing buffer, Read: %lu, Written: %lu\n", BytesRead, BytesWritten);
+            printf ("Backup ERROR: Error writing buffer, Read: %lu, Written: %lu\n", BytesRead, BytesWrite);
             ret = 1;
             goto Done;
         }
 
-        BytesTotal += BytesWritten;
+        BytesTotal += BytesWrite;
     }
 
     BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1);
@@ -914,25 +1172,25 @@ Done:
 
     if (-1 != InputFD)
     {
-        ret = close (InputFD);
+        close (InputFD);
         InputFD = -1;
     }
 
     if (-1 != OutputFD)
     {
-        ret = close (OutputFD);
+        close (OutputFD);
         OutputFD = -1;
     }
 
     if (-1 != ErrorFD)
     {
-        ret = close (ErrorFD);
+        close (ErrorFD);
         ErrorFD = -1;
     }
 
     if (pid > 0)
     {
-        ret = pclose3 (pid);
+        pclose3 (pid);
         pid = 0;
     }
 
@@ -942,16 +1200,17 @@ Done:
 
 int BorgBackupPrune (long PruneDays)
 {
-    int   ret       = 0;
+    int   ret       =  0;
     pid_t pid       =  0;
     int   InputFD   = -1;
     int   OutputFD  = -1;
     int   ErrorFD   = -1;
 
-    ssize_t BytesRead = 0;
+    ssize_t BytesRead     = 0;
+    ssize_t BytesWrite    = 0;
     char  szPruneStr[255] = {0};
 
-    const char *args[] = { g_szBorgBackupBinary, "prune", szPruneStr, NULL };
+    const char *args[] = { g_szBorgBackupBinary, "prune", "--stats", szPruneStr, NULL };
 
     if (PruneDays < g_MinPruneDays)
     {
@@ -959,8 +1218,9 @@ int BorgBackupPrune (long PruneDays)
         return 1;
     }
 
-    snprintf (szPruneStr, sizeof (szPruneStr), " --keep-within %ld%s", PruneDays, "d");
+    snprintf (szPruneStr, sizeof (szPruneStr), "--keep-within=%ld%s", PruneDays, "d");
 
+    PushToSSHAgent();
     SetEnvironmentVars();
     pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 1, args);
     UnsetEnvironmentVars();
@@ -973,16 +1233,36 @@ int BorgBackupPrune (long PruneDays)
         goto Done;
     }
 
-    /* check if Borg process signaled an error */
-    if (-1 != ErrorFD)
+    /* Check if Borg process provides output */
+    if (-1 != OutputFD)
     {
-        BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1);
-        if (BytesRead > 0)
+        while ((BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer)-1)))
         {
             g_Buffer[BytesRead] = '\0';
-            printf ("\nBackup ERROR: Cannot start Borg process\n\n");
-            printf ("%s\n", g_Buffer);
-            goto Done;
+            BytesWrite = write (1, g_Buffer, BytesRead);
+
+            if (BytesRead != BytesWrite)
+            {
+                perror ("Warning: Incomplete buffer write");
+            }
+
+            usleep (10*1000);
+        }
+    }
+
+    if (-1 != ErrorFD)
+    {
+        while ((BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1)))
+        {
+            g_Buffer[BytesRead] = '\0';
+            BytesWrite = write (2, g_Buffer, BytesRead);
+
+            if (BytesRead != BytesWrite)
+            {
+                perror ("Warning: Incomplete buffer write");
+            }
+
+            usleep (10*1000);
         }
     }
 
@@ -992,25 +1272,25 @@ Done:
 
     if (-1 != InputFD)
     {
-        ret = close (InputFD);
+        close (InputFD);
         InputFD = -1;
     }
 
     if (-1 != OutputFD)
     {
-        ret = close (OutputFD);
+        close (OutputFD);
         OutputFD = -1;
     }
 
     if (-1 != ErrorFD)
     {
-        ret = close (ErrorFD);
+        close (ErrorFD);
         ErrorFD = -1;
     }
 
     if (pid > 0)
     {
-        ret = pclose3 (pid);
+        pclose3 (pid);
         pid = 0;
     }
 
@@ -1020,15 +1300,16 @@ Done:
 
 int BorgBackupDelete (const char *pszArchiv)
 {
-    int   ret       = 0;
+    int   ret       =  0;
     pid_t pid       =  0;
     int   InputFD   = -1;
     int   OutputFD  = -1;
     int   ErrorFD   = -1;
 
-    ssize_t BytesRead = 0;
+    ssize_t BytesRead  = 0;
+    ssize_t BytesWrite = 0;
 
-    const char *args[] = { g_szBorgBackupBinary, "delete", pszArchiv, NULL };
+    const char *args[] = { g_szBorgBackupBinary, "delete", "--stats", pszArchiv, NULL };
 
     if (0 == g_BorgDeleteAllowed)
     {
@@ -1043,6 +1324,7 @@ int BorgBackupDelete (const char *pszArchiv)
         goto Done;
     }
 
+    PushToSSHAgent();
     SetEnvironmentVars();
     pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 1, args);
     UnsetEnvironmentVars();
@@ -1055,44 +1337,190 @@ int BorgBackupDelete (const char *pszArchiv)
         goto Done;
     }
 
-    /* check if Borg process signaled an error */
-    if (-1 != ErrorFD)
+    /* Check if Borg process provides output */
+    if (-1 != OutputFD)
     {
-        BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1);
-        if (BytesRead > 0)
+        while ((BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer)-1)))
         {
             g_Buffer[BytesRead] = '\0';
-            printf ("\nBackup ERROR: Cannot start Borg process\n\n");
-            printf ("%s\n", g_Buffer);
-            goto Done;
+            BytesWrite = write (1, g_Buffer, BytesRead);
+
+            if (BytesRead != BytesWrite)
+            {
+                perror ("Warning: Incomplete buffer write");
+            }
+
+            usleep (10*1000);
         }
     }
 
-    printf ("\nBackup OK: Prune successful\n\n");
+    if (-1 != ErrorFD)
+    {
+        while ((BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1)))
+        {
+            g_Buffer[BytesRead] = '\0';
+            BytesWrite = write (2, g_Buffer, BytesRead);
+ 
+            if (BytesRead != BytesWrite)
+            {
+                perror ("Warning: Incomplete buffer write");
+            }
+
+            usleep (10*1000);
+
+            if (strstr ((char *)g_Buffer, "not found"))
+            {
+                printf ("\nBackup ERROR: Cannot find archive to delete\n\n");
+                ret = -1;
+            }
+        }
+    }
+
+    if (0 == ret)
+        printf ("\nBackup OK: Delete successful\n\n");
 
 Done:
 
     if (-1 != InputFD)
     {
-        ret = close (InputFD);
+        close (InputFD);
         InputFD = -1;
     }
 
     if (-1 != OutputFD)
     {
-        ret = close (OutputFD);
+        close (OutputFD);
         OutputFD = -1;
     }
 
     if (-1 != ErrorFD)
     {
-        ret = close (ErrorFD);
+        close (ErrorFD);
         ErrorFD = -1;
     }
 
     if (pid > 0)
     {
-        ret = pclose3 (pid);
+        pclose3 (pid);
+        pid = 0;
+    }
+
+    return ret;
+}
+
+
+int BorgBackupCreate (int argc, char *argv[])
+{
+    int    i         =  0;
+    int    ret       =  0;
+    pid_t  pid       =  0;
+    int    InputFD   = -1;
+    int    OutputFD  = -1;
+    int    ErrorFD   = -1;
+    int    ArgCount  =  argc+1;
+    size_t ArgSize   =  ArgCount * sizeof (char *);
+
+    ssize_t BytesRead   = 0;
+    ssize_t BytesWrite  = 0;
+    const char **ppArgs = NULL;
+
+    /* Allocate variable argument list pointer */
+    ppArgs = (const char **) malloc (ArgSize);
+
+    if (NULL == ppArgs)
+    {
+        printf ("\nBackup ERROR: Cannot allocate memory for argument list\n\n");
+        ret = -1;
+        goto Done;
+    }
+
+    memset (ppArgs, 0, ArgSize);
+
+    /* Replace the program name with Borg Backup binary */
+    ppArgs[0] = g_szBorgBackupBinary;
+
+    /* Copy all parameters beside the first one (which is the program name) */
+    for (i=1; i<argc; i++)
+    {
+        ppArgs[i] = argv[i];
+    }
+
+    PushToSSHAgent();
+    SetEnvironmentVars();
+    pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 1, (const char **) ppArgs);
+    UnsetEnvironmentVars();
+
+    if (pid < 1)
+    {
+        printf ("\nBackup ERROR: Cannot start Borg process\n\n");
+        perror ("Backup ERROR: Cannot start Borg process");
+        ret = 1;
+        goto Done;
+    }
+
+    /* Check if Borg process provides output */
+    if (-1 != OutputFD)
+    {
+        while ((BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer)-1)))
+        {
+            g_Buffer[BytesRead] = '\0';
+            BytesWrite = write (1, g_Buffer, BytesRead);
+
+            if (BytesRead != BytesWrite)
+            {
+                perror ("Warning: Incomplete buffer write");
+            }
+
+            usleep (10*1000);
+        }
+    }
+
+    /* Check if Borg process signaled an error */
+    if (-1 != ErrorFD)
+    {
+        while ((BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1)))
+        {
+            g_Buffer[BytesRead] = '\0';
+            BytesWrite = write (2, g_Buffer, BytesRead);
+
+            if (BytesRead != BytesWrite)
+            {
+                perror ("Warning: Incomplete buffer write");
+            }
+
+            usleep (10*1000);
+        }
+    }
+
+Done:
+
+    if (ppArgs)
+    {
+        free (ppArgs);
+        ppArgs = NULL;
+    }
+
+    if (-1 != InputFD)
+    {
+        close (InputFD);
+        InputFD = -1;
+    }
+
+    if (-1 != OutputFD)
+    {
+        close (OutputFD);
+        OutputFD = -1;
+    }
+
+    if (-1 != ErrorFD)
+    {
+        close (ErrorFD);
+        ErrorFD = -1;
+    }
+
+    if (pid > 0)
+    {
+        pclose3 (pid);
         pid = 0;
     }
 
@@ -1150,10 +1578,9 @@ int BorgBackupStart (const char *pszReqFilename, const char *pszArchiv)
 
     printf ("\nStarting Borg process ...\n\n");
 
+    PushToSSHAgent();
     SetEnvironmentVars();
-
     pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 1, args);
-
     UnsetEnvironmentVars();
 
     if (pid < 1)
@@ -1175,7 +1602,7 @@ int BorgBackupStart (const char *pszReqFilename, const char *pszArchiv)
         if (BytesRead > 0)
         {
             g_Buffer[BytesRead] = '\0';
-            printf ("\nBackup ERROR: Cannot start Borg process\n\n");
+            printf ("\nBackup ERROR: Cannot read from Borg process\n\n");
             printf ("%s\n", g_Buffer);
             goto Done;
         }
@@ -1256,7 +1683,7 @@ Done:
 
     if (-1 != InputFD)
     {
-        ret = close (InputFD);
+        close (InputFD);
         InputFD = -1;
     }
 
@@ -1327,25 +1754,25 @@ Cleanup:
 
     if (-1 != InputFD)
     {
-        ret = close (InputFD);
+        close (InputFD);
         InputFD = -1;
     }
 
     if (-1 != OutputFD)
     {
-        ret = close (OutputFD);
+        close (OutputFD);
         OutputFD = -1;
     }
 
     if (-1 != ErrorFD)
     {
-        ret = close (ErrorFD);
+        close (ErrorFD);
         ErrorFD = -1;
     }
 
     if (pid > 0)
     {
-        ret = pclose3 (pid);
+        pclose3 (pid);
         pid = 0;
     }
 
@@ -1521,10 +1948,9 @@ int BorgBackupInitRepo (const char *pszRepository)
         goto Done;
     }
 
+    PushToSSHAgent();
     SetEnvironmentVars();
-
     pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 0, args);
-
     UnsetEnvironmentVars();
 
     if (pid < 1)
@@ -1538,13 +1964,13 @@ Done:
 
     if (-1 != InputFD)
     {
-        ret = close (InputFD);
+        close (InputFD);
         InputFD = -1;
     }
 
     if (-1 != OutputFD)
     {
-        ret = close (OutputFD);
+        close (OutputFD);
         OutputFD = -1;
     }
 
@@ -1558,202 +1984,85 @@ Done:
             printf ("%s\n", g_Buffer);
         }
 
-        ret = close (ErrorFD);
+        close (ErrorFD);
         ErrorFD = -1;
     }
 
     if (pid > 0)
     {
-        ret = pclose3 (pid);
+        pclose3 (pid);
         pid = 0;
     }
 
     if (ret)
     {
-        printf ("ERROR initializing archive\n");
+        printf ("ERROR initializing repo\n");
     }
 
     return ret;
 }
 
 
-int GetTokenFromString (char *pszBuffer, const char *pszToken, int MaxValueSize, char *retpszValue)
-{
-    int  len = 0;
-    char *p  = NULL;
-    char *r  = retpszValue;
-
-    if ((0 == MaxValueSize) || (NULL == pszBuffer) || (NULL == pszToken) || (NULL == retpszValue))
-        return 0;
-
-    p = strstr (pszBuffer, pszToken);
-
-    if (NULL == p)
-        return 0;
-
-    MaxValueSize--;
-
-    p += strlen (pszToken)+1;
-
-    while (len < MaxValueSize)
-    {
-        if (';' == *p)
-            break;
-
-        *r = *p;
-        r++;
-        p++;
-    }
-
-    *r = '\0';
-
-    return len;
-}
-
-
-int StartSSHAgent()
+int BorgBackupList (const char *pszArchiv)
 {
     int ret = 0;
     int InputFD  = -1;
     int OutputFD = -1;
     int ErrorFD  = -1;
 
-    pid_t   pid  =  0;
-    ssize_t BytesRead = 0;
+    pid_t   pid        = 0;
+    ssize_t BytesRead  = 0;
+    ssize_t BytesWrite = 0;
 
-    char szNum[20] = {0};
-    const char *args[] = { g_szSSHAgentBinary, "-t", szNum, "-s", NULL };
+    const char *args[] = { g_szBorgBackupBinary, "list", pszArchiv, NULL };
 
-    printf ("Starting SSH Agent ...\n");
-
-    snprintf (szNum, sizeof (szNum), "%u", g_SSHKeyLife);
-
-    pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 0, args);
-
-    if (pid < 1)
-    {
-        perror ("Cannot start SSH Agent");
-        ret = 1;
-        goto Done;
-    }
-
-    printf ("SSH Agent started\n");
-
-Done:
-
-    if (-1 != InputFD)
-    {
-        ret = close (InputFD);
-        InputFD = -1;
-    }
-
-    if (-1 != OutputFD)
-    {
-        BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer)-1);
-
-        if (BytesRead > 0)
-        {
-            g_Buffer[BytesRead] = '\0';
-
-            GetTokenFromString ((char *) g_Buffer, g_szSSH_AUTH_SOCK, sizeof (g_szSSHAuthSock), g_szSSHAuthSock);
-            GetTokenFromString ((char *) g_Buffer, g_szSSH_AGENT_PID, sizeof (szNum), szNum);
-            g_SSHAgentPID = atoi (szNum);
-
-            if (g_Verbose)
-                printf ("SSH Agent Sock: [%s] PID: %d\n", g_szSSHAuthSock, g_SSHAgentPID);
-        }
-
-        ret = close (OutputFD);
-        OutputFD = -1;
-    }
-
-    if (-1 != ErrorFD)
-    {
-        /* Write potential error output into log */
-        BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1);
-        if (BytesRead > 0)
-        {
-            g_Buffer[BytesRead] = '\0';
-            printf ("%s\n", g_Buffer);
-        }
-
-        ret = close (ErrorFD);
-        ErrorFD = -1;
-    }
-
-    if (pid > 0)
-    {
-        ret = pclose3 (pid);
-        pid = 0;
-    }
-
-    if (ret)
-    {
-        printf ("ERROR starting SSH agent\n");
-    }
-
-    return ret;
-}
-
-
-int PushToSSHAgent()
-{
-    int ret = 0;
-    int InputFD  = -1;
-    int OutputFD = -1;
-    int ErrorFD  = -1;
-
-    pid_t   pid       = 0;
-    ssize_t BytesRead = 0;
-
-    const char *args[] = { g_szSSHAddBinary, "-", NULL };
-
-    if (!*g_szSSHKey)
+    if (IsNullStr (pszArchiv))
     {
         ret = 1;
         goto Done;
     }
 
-    if (0 == g_SSHAgentPID)
-    {
-        ret = StartSSHAgent();
-        if (ret)
-            goto Done;
-    }
+    PushToSSHAgent();
 
     SetEnvironmentVars();
-
     pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 0, args);
-
     UnsetEnvironmentVars();
 
     if (pid < 1)
     {
-        perror ("Cannot add SSH key");
+        perror ("Backup ERROR: Cannot start Borg process");
         ret = 1;
         goto Done;
     }
 
-    write (InputFD, g_szSSHKey, strlen (g_szSSHKey));
+    if (-1 == OutputFD)
+    {
+        perror ("Backup ERROR: No output file pointer returned");
+        ret = 1;
+        goto Done;
+    }
+
+    while ((BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer))))
+    {
+        BytesWrite = write (1, g_Buffer, BytesRead);
+
+        if (BytesRead != BytesWrite)
+        {
+            perror ("Warning: Incomplete buffer write");
+        }
+    }
 
 Done:
 
     if (-1 != InputFD)
     {
-        ret = close (InputFD);
+        close (InputFD);
         InputFD = -1;
     }
 
     if (-1 != OutputFD)
     {
-        BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer)-1);
-        if (BytesRead > 0)
-        {
-            g_Buffer[BytesRead] = '\0';
-            printf ("%s\n", g_Buffer);
-        }
-
-        ret = close (OutputFD);
+        close (OutputFD);
         OutputFD = -1;
     }
 
@@ -1767,19 +2076,19 @@ Done:
             printf ("%s\n", g_Buffer);
         }
 
-        ret = close (ErrorFD);
+        close (ErrorFD);
         ErrorFD = -1;
     }
 
     if (pid > 0)
     {
-        ret = pclose3 (pid);
+        pclose3 (pid);
         pid = 0;
     }
 
     if (ret)
     {
-        printf ("ERROR pushing key to SSH Agent\n");
+        printf ("ERROR listing archive\n");
     }
 
     return ret;
@@ -1792,9 +2101,9 @@ int BorgBackupRestore (const char *pszArchiv, const char *pszSource, const char 
     pid_t pid      =  0;
     FILE *fpOutput = NULL;
     
-    ssize_t BytesRead    = 0;
-    ssize_t BytesWritten = 0;
-    size_t  BytesTotal   = 0;
+    ssize_t BytesRead  = 0;
+    ssize_t BytesWrite = 0;
+    size_t  BytesTotal = 0;
 
     time_t tStart   = {0};
     time_t tEnd     = {0};
@@ -1843,10 +2152,9 @@ int BorgBackupRestore (const char *pszArchiv, const char *pszSource, const char 
 
     tStart = GetOSTimer();
 
+    PushToSSHAgent();
     SetEnvironmentVars();
-
     pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 0, args);
-
     UnsetEnvironmentVars();
 
     if (pid < 1)
@@ -1858,19 +2166,19 @@ int BorgBackupRestore (const char *pszArchiv, const char *pszSource, const char 
 
     while ((BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer))))
     {
-        BytesWritten = fwrite (g_Buffer, 1, BytesRead, fpOutput);
+        BytesWrite = fwrite (g_Buffer, 1, BytesRead, fpOutput);
 
-        if (BytesRead != BytesWritten)
+        if (BytesRead != BytesWrite)
         {
-            printf ("Restore ERROR: Cannot write buffer, Read: %lu, Written: %lu\n", BytesRead, BytesWritten);
+            printf ("Restore ERROR: Cannot write buffer, Read: %lu, Written: %lu\n", BytesRead, BytesWrite);
             ret = 1;
             goto Done;
         }
 
-        BytesTotal += BytesWritten;
+        BytesTotal += BytesWrite;
     }
 
-    if (0 == BytesWritten)
+    if (0 == BytesWrite)
     {
         ret = 1;
         goto Done;
@@ -1890,13 +2198,13 @@ Done:
 
     if (-1 != InputFD)
     {
-        ret = close (InputFD);
+        close (InputFD);
         InputFD = -1;
     }
 
     if (-1 != OutputFD)
     {
-        ret = close (OutputFD);
+        close (OutputFD);
         OutputFD = -1;
     }
 
@@ -1910,13 +2218,13 @@ Done:
             printf ("%s\n", g_Buffer);
         }
 
-        ret = close (ErrorFD);
+        close (ErrorFD);
         ErrorFD = -1;
     }
 
     if (pid > 0)
     {
-        ret = pclose3 (pid);
+        pclose3 (pid);
         pid = 0;
     }
 
@@ -1935,6 +2243,36 @@ Done:
     return ret;
 }
 
+int LogGetPassword (const pid_t pid, const char *pszExe, const char *pszStatus)
+{
+    int ret  = 0;
+    FILE *fp = NULL;
+
+    if (IsNullStr (g_szGetPwdFile))
+        return 1;
+
+    fp = fopen (g_szGetPwdFile, "w+");
+
+    if (NULL == fp)
+    {
+        ret = 1;
+        goto Done;
+    }
+
+    fprintf (fp, "%s,%d,%s\n", (NULL == pszStatus) ? "Unknown Status" : pszStatus, pid, (NULL == pszExe) ? "Unknown" : pszExe);
+
+Done:
+
+    if (fp)
+    {
+        fclose (fp);
+        fp = NULL;
+    }
+
+    return ret;
+}
+
+
 int GetPassword()
 {
     pid_t   ppid = getppid();
@@ -1946,11 +2284,17 @@ int GetPassword()
     snprintf (szProcess, sizeof (szProcess), "/proc/%d/exe", ppid);
 
     ret_size = readlink (szProcess, szExe, sizeof (szExe));
-    if (0 <= ret_size)
+    if (ret_size <= 0)
         goto Done;
 
     if (strcmp (szExe, g_szBorgBackupBinary))
+    {
+        LogGetPassword (ppid, szExe, "Unauthorized");
         goto Done;
+    }
+
+    if (g_Verbose)
+        LogGetPassword (ppid, szExe, "OK");
 
     printf ("%s\n", g_szPassphrase);
 
@@ -2174,11 +2518,21 @@ int main (int argc, char *argv[])
     if (!*g_nshBorgDir)
         snprintf (g_nshBorgDir, sizeof (g_nshBorgDir), "%s/.nshborg", pPasswdEntry ? pPasswdEntry->pw_dir : "/tmp");
 
-    snprintf (g_szFilePID,      sizeof (g_szFilePID),      "%s/nshborg.pid",  g_nshBorgDir);
-    snprintf (g_szBorgLogFile,  sizeof (g_szBorgLogFile),  "%s/nshborg.log",  g_nshBorgDir);
-    snprintf (szDefaultReqFile, sizeof (szDefaultReqFile), "%s/.nshborg.reg", g_nshBorgDir);
+    if (g_Verbose)
+        printf ("nshborg Directory: [%s]\n", g_nshBorgDir);
+
+    snprintf (g_szFilePID,      sizeof (g_szFilePID),      "%s/nshborg.pid",     g_nshBorgDir);
+    snprintf (g_szBorgLogFile,  sizeof (g_szBorgLogFile),  "%s/nshborg.log",     g_nshBorgDir);
+    snprintf (g_szGetPwdFile,   sizeof (g_szGetPwdFile),   "%s/nshborg_pwd.log", g_nshBorgDir);
+    snprintf (szDefaultReqFile, sizeof (szDefaultReqFile), "%s/.nshborg.reg",    g_nshBorgDir);
 
     CreateDirectoryTree (g_nshBorgDir, S_IRWXU);
+
+    if ((argc >2) && (0 == strcmp (argv[1], "create")))
+    {
+        BorgBackupCreate (argc, argv);
+        goto Done;
+    }
 
     while (argc > consumed)
     {
@@ -2188,9 +2542,25 @@ int main (int argc, char *argv[])
             goto Done;
         }
 
-        else if (0 == strcmp (argv[consumed], "-i"))
+        else if ((0 == strcmp (argv[consumed], "-i")) || (0 == strcmp (argv[consumed], "init")))
         {
             bInitRepo = true;
+        }
+
+        else if ((0 == strcmp (argv[consumed], "-l")) || (0 == strcmp (argv[consumed], "list")))
+        {
+            consumed++;
+            if (consumed >= argc)
+                goto InvalidSyntax;
+            if (argv[consumed][0] == '-')
+                goto InvalidSyntax;
+
+            if ((0 == strcmp (argv[consumed], "repo")) || (0 == strcmp (argv[consumed], ".")))
+                BorgBackupList (g_szBorgRepo);
+            else
+                BorgBackupList (argv[consumed]);
+
+            goto Done;
         }
 
         else if (0 == strcmp (argv[consumed], "-z"))
@@ -2306,6 +2676,12 @@ int main (int argc, char *argv[])
                 goto InvalidSyntax;
 
             PruneDays = atoi (argv[consumed]);
+
+            if (0 == PruneDays)
+            {
+                printf ("\nInvalid Prune Days sepcified!\n\n");
+                goto InvalidSyntax;
+            }
         }
 
         else
@@ -2369,6 +2745,10 @@ InvalidSyntax:
 
 Done:
 
+    /* Wipe out sensitive data */
+    memset (g_szSSHKey,      0, sizeof (g_szSSHKey));
+    memset (g_szPassphrase,  0, sizeof (g_szPassphrase));
+    memset (g_szSSHAuthSock, 0, sizeof (g_szSSHAuthSock));
 
     if (g_SSHAgentPID)
     {
