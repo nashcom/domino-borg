@@ -6,45 +6,47 @@ Domino Borg Integration
 
 This project implements a helper application to integrate Borg Backup with Domino Backup available since Domino 12.0.
 
-Out of the box Borg Backup does not provide a functionality to add files step by step into a backup.
+Out of the box Borg Backup does not provide functionality to add files step by step into a backup.
 You can pipe the files to backup into the borg process. But the backup starts once all file names are received.
 
-Domino Backup requires databases to be backed up after bringing each database into backup mode one by one.
-A snapshot of all databases would not work, because too much delta information would need to be collected and databases would be in backup mode for a long time.
+Domino Backup requires databases (.nsf, .ntf and .box) to be backed up after bringing each database into backup mode one by one.
+A snapshot of all databases would not work, because databases would be in backup mode for a long time.
 
-The **nshborg** helper program starts the borg process and waits for requests of files to be added to the backup.
+The **nshborg** helper program starts a borg process and waits for requests of files to be added to the backup.  
+nshborg pipes the files in tar format into the archive (the functionality is available since Borg Backup V1.2.6).
 
-nshborg pipes the files tar formatted into the archive (the functionality is available since Borg Backup V1.2.6).
+This results in a simple flow:
 
-This results in a simple flow where Domino first starts the borg process in a pre-backup script.
-Then brings all databases into backup mode step by step and sends a request to nshborg to take a backup.
+- Domino Backup first starts a borg process in a pre-backup script
+- Then brings all databases into backup mode step by step and sends a request to nshborg to take a backup
+- Finally in the post backup event, nshborg is called again to stop the backup
 
-Finally in the post backup event, nshborg is called again to stop the backup.
+The end result is a single Borg archive with all databases and delta files (which might occur during backup of databases).
 
-The end result is a single Borg archive with all databases and delta files which might occur during backup of databases.
 
 ## Borg Backup "import-tar"
 
-The functionality used on the Borg Backup side is [borg import-tar](https://borgbackup.readthedocs.io/en/stable/usage/tar.html).
+The functionality used on Borg Backup side is [borg import-tar](https://borgbackup.readthedocs.io/en/stable/usage/tar.html).
 It allows to send one or multiple tar formatted streams to running borg process.
 
 Another important option in this context is the `--ignore-zeros` which makes it possible to send more than one tar stream.
-Tar is a quite old format, which has originally developed for tap backups. In addition to the file data it also provides meta data, like user and file permissions.
+Tar has originally developed for tap backups. In addition to the file data it also provides meta data, like user and file permissions.
 nshborg leverages the existing tar binary and uses pipes between the borg process on the one side and also to the tar program for every database to backup.
+
 
 ## Borg Restore
 
-The nshborg helper tool also provides a restore option.
+The nshborg helper application also provides a restore option.
+Restore implemented using the Borg `extract` command streaming databases to a restore location.
 
-On purpose the nshborg does not implement a prune option for security reasons. Prune operations are directly executed using the borg command.
-Borg Backup provides very flexible prune operations. Domino Backup prune operations and Borg prune operations should be aligned.
 
 ## Borg Prune/Delete
 
+Borg Backup provides very flexible prune operations. Domino Backup prune operations and Borg prune operations should be aligned.
+
 Delete and prune operations are critical and should be handled with care.
 nshborg supports prune and delete operations and controls the requests.
-
-The delete operations is prevented by default and needs to be configured via `BORG_DELETE_ALLOWED=1`
+Delete operations is prevented by default and needs to be configured via `BORG_DELETE_ALLOWED=1`
 
 Prune operations are enabled by default with a minimum of 7 days for security reasons.
 A lower minimum can be configured via `BORG_MIN_PRUNE_DAYS`
@@ -83,9 +85,10 @@ Environment variable `BORG_PASSCOMMAND` defines the command to be executed. nshb
 
 ## Configuration
 
-Configuration location: `/etc/sysconfig/nshborg.cfg`.
+Default configuration searched first: `/etc/sysconfig/nshborg.cfg`.
 
-Specially for containers to persist the configuration the Domino data directory is used as a fallback is `/local/notesdata/domino/nshborg.cfg`
+As a fallback `/local/notesdata/domino/nshborg.cfg` is used, which is specially important for container environments.
+
 
 ### Borg configuration settings
 
@@ -104,6 +107,15 @@ See the [Borg documentation](https://borgbackup.readthedocs.io/en/stable/usage/g
 | BORG_REMOTE_PATH | Borg remote binary name for SSH operations | |
 
 
+### Creating and editing a configuration file
+
+The configuration command `-cfg` allows to edit the configuration file and creates a default configuration file when first invoked.
+
+- Running as root the global configuration is created/edited (/etc/sysconfig/nshborg.cfg).
+- Running with a normal user the local/application configuration is edited (/local/notesdata/domino/nshborg.cfg).
+
+Invoked with the root user nshborg file will be changed to the **borg** user and the SUID is set to allow to switch to the **borg** user to read the configuration.
+
 ### Other configuration options
 
 | Parameter      |Description                       | Default |
@@ -111,8 +123,44 @@ See the [Borg documentation](https://borgbackup.readthedocs.io/en/stable/usage/g
 | BORG_BINARY | location of borg binary | |
 | SSH_KEYFILE | SSH key file to use for SSH Agent | |
 | SSH_KEYLIFE | Life of key file used for SSH Agent | |
+| BORG_ENCRYPTON_MODE | Encryption mode for repository |repokey |
 | BORG_DELETE_ALLOWED | 1 = Allow delete operation | Disabled |
 | BORG_MIN_PRUNE_DAYS | Minimum prune days | 7 days |
+| BORG_PASSTHRU_COMMANDS_ALLOWED | Allow passthru commands | 0 |
+
+### Repository encryption
+
+By default a repository key is used. This is perfectly OK for local repositories or remote repositories managed in a corporate enviroment.
+In case the remote repository is storged on external not fully trusted storage, it would make more sense to store the keys locally.
+
+Borg supports repository keys and separate local keyfiles.
+
+The configuration file option for using a local keyfile has to be specified before the repository is initialized and cannot be changed after it has been initialized.
+
+Set the following configuration option for using keyfiles instead of repository keys
+
+```
+BORG_ENCRYPTON_MODE=keyfile
+```
+
+
+IMPORTANT: When using a local key file, the key file must be backed up separately!!!
+
+Please refer to Borg Backup documentation for detail about localtion of the keyfiles and how to protect them.
+There is also a key export and import command available. See [borg key export](https://borgbackup.readthedocs.io/en/stable/usage/key.html#borg-key-export) and [borg init](https://borgbackup.readthedocs.io/en/stable/usage/init.html) documentation for details.
+
+
+### Borg Passthru Commands
+
+nshborg provides a shell around Borg Backup commands. This includes defining parameters and providing SSH keys when invoking the actual borg command.
+To benefit from this integration, nshborg provides a passthru functionality.
+
+All standard commands beside prune and backup can be passed to borg backup.
+To enable the passthru functionality set the follwoing configuration option:
+
+```
+BORG_PASSTHRU_COMMANDS_ALLOWED=1
+```
 
 
 ## Coexisting with existing backups

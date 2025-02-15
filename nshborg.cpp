@@ -1,8 +1,8 @@
 /*
 ###########################################################################
 # Domino Borg Backup Integration                                          #
-# Version 0.9.4 09.04.2024                                                #
-# (C) Copyright Daniel Nashed/NashCom 2023-2024                           #
+# Version 0.9.6 16.02.2025                                                #
+# (C) Copyright Daniel Nashed/NashCom 2023-2025                           #
 #                                                                         #
 # Licensed under the Apache License, Version 2.0 (the "License");         #
 # you may not use this file except in compliance with the License.        #
@@ -34,6 +34,7 @@
 #include <sys/time.h>
 #include <pwd.h>
 #include <grp.h>
+#include <time.h>
 
 #define MAX_BUFFER 1048576 /* 1 MB */
 #define MAX_PATH      2048
@@ -44,17 +45,22 @@
 /* Global buffer used for all I/O */
 unsigned char  g_Buffer[MAX_BUFFER+1] = {0};
 
-char  g_szVersion[]          = "0.9.5";
+char  g_szVersion[]          = "0.9.6";
 char  g_szBackupEndMarker[]  = "::BORG-BACKUP-END::";
 char  g_szSSH_AUTH_SOCK[]    = "SSH_AUTH_SOCK";
 char  g_szSSH_AGENT_PID[]    = "SSH_AGENT_PID";
+
+char  g_szConfigFile[]       = "/etc/sysconfig/nshborg.cfg";
+char  g_szDominoConfigFile[] = "/local/notesdata/domino/nshborg.cfg";
 
 char  g_szBorgBackupBinary[MAX_PATH+1] = "/usr/bin/borg";
 char  g_szSSHAgentBinary[MAX_PATH+1]   = "/usr/bin/ssh-agent";
 char  g_szSSHAddBinary[MAX_PATH+1]     = "/usr/bin/ssh-add";
 char  g_szTarBinary[MAX_PATH+1]        = "/usr/bin/tar";
 char  g_szBorgRepo[MAX_PATH+1]         = "/local/backup/borg";
+char  g_szBorgEncryptionMode[40+1]     = "repokey";
 char  g_nshBorgDir[1024+1]             = {0};
+char  g_szExe[MAX_PATH+1]              = {0};
 char  g_szFilePID[MAX_PATH+1]          = {0};
 char  g_szBorgLogFile[MAX_PATH+1]      = {0};
 char  g_szGetPwdFile[MAX_PATH+1]       = {0};
@@ -67,18 +73,22 @@ char  g_szSSHAuthSock[MAX_PATH+1]      = {0};
 char  g_szSSHKeyFile[MAX_PATH+1]       = {0};
 char  g_szSSHKey[8000]                 = {0};
 
-pid_t g_SSHAgentPID       =   0;
-int   g_SSHKeyLife        =  20;
-int   g_WaitTime          = 500;
-int   g_Verbose           =   0;
-int   g_BorgDeleteAllowed =   0;
-long  g_MinPruneDays      =   7;
+pid_t g_SSHAgentPID         =   0;
+int   g_SSHKeyLife          =  20;
+int   g_WaitTime            = 500;
+int   g_Verbose             =   0;
+int   g_BorgDeleteAllowed   =   0;
+int   g_BorgPassthruAllowed =   0;
+long  g_MinPruneDays        =   7;
 
 uid_t g_uid  = getuid();
 gid_t g_gid  = getgid();
 uid_t g_euid = geteuid();
 gid_t g_egid = getegid();
 
+
+const char *g_szPassthruCommands[] = { "help", "init", "create", "extract", "check", "rename", "list", "diff", "compact", "info", "mount", "umount", "config", "break-lock" };
+const size_t g_PassthruCommandCount = sizeof (g_szPassthruCommands) / sizeof(g_szPassthruCommands[0]);
 
 void PrintUser (const char *pszHeader, uid_t uid)
 {
@@ -527,7 +537,7 @@ size_t ReadFileIntoBuffer (const char *pszFilename, size_t BufferSize, char *ret
 {
     size_t len       = 0;
     size_t bytesread = 0;
-    
+
     FILE *fp = NULL;
 
     if (0 == BufferSize)
@@ -578,7 +588,13 @@ int FileExists (const char *pszFilename)
     ret = stat (pszFilename, &Filestat);
 
     if (ret)
-        return 0;
+    {
+        if (ENOENT == errno)
+            return 0;
+
+        perror (pszFilename);
+        return -1;
+    }
 
     if (S_IFDIR & Filestat.st_mode)
         return 2;
@@ -1298,35 +1314,26 @@ Done:
 }
 
 
-int BorgBackupDelete (const char *pszArchiv)
+int InvokeBorgCommand (const char *pArgs[])
 {
     int   ret       =  0;
-    pid_t pid       =  0;
     int   InputFD   = -1;
     int   OutputFD  = -1;
     int   ErrorFD   = -1;
+    pid_t pid       =  0;
 
     ssize_t BytesRead  = 0;
     ssize_t BytesWrite = 0;
 
-    const char *args[] = { g_szBorgBackupBinary, "delete", "--stats", pszArchiv, NULL };
 
-    if (0 == g_BorgDeleteAllowed)
+    if (NULL == pArgs)
     {
-        printf ("\nBackup ERROR: Archive delete is not allowed\n\n");
-        return 1;
-    }
-
-    if (IsNullStr (pszArchiv))
-    {
-        printf ("\nBackup ERROR: No archive to delete specified\n\n");
-        ret = 1;
-        goto Done;
+        return -1;
     }
 
     PushToSSHAgent();
     SetEnvironmentVars();
-    pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 1, args);
+    pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 1, pArgs);
     UnsetEnvironmentVars();
 
     if (pid < 1)
@@ -1360,7 +1367,7 @@ int BorgBackupDelete (const char *pszArchiv)
         {
             g_Buffer[BytesRead] = '\0';
             BytesWrite = write (2, g_Buffer, BytesRead);
- 
+
             if (BytesRead != BytesWrite)
             {
                 perror ("Warning: Incomplete buffer write");
@@ -1375,9 +1382,6 @@ int BorgBackupDelete (const char *pszArchiv)
             }
         }
     }
-
-    if (0 == ret)
-        printf ("\nBackup OK: Delete successful\n\n");
 
 Done:
 
@@ -1409,19 +1413,63 @@ Done:
 }
 
 
-int BorgBackupCreate (int argc, char *argv[])
+
+int BorgBackupDelete (const char *pszArchiv)
+{
+    int  ret = 0;
+
+    const char *args[] = { g_szBorgBackupBinary, "delete", "--stats", pszArchiv, NULL };
+
+    if (0 == g_BorgDeleteAllowed)
+    {
+        printf ("\nBackup ERROR: Archive delete is not allowed\n\n");
+        return 1;
+    }
+
+    if (IsNullStr (pszArchiv))
+    {
+        printf ("\nBackup ERROR: No archive to delete specified\n\n");
+        ret = 1;
+        goto Done;
+    }
+
+
+    ret = InvokeBorgCommand (args);
+
+Done:
+
+    if (ret)
+        printf ("ERROR deleting archive\n");
+    else
+        printf ("\nBackup OK: Delete successful\n\n");
+
+    return ret;
+}
+
+
+bool IsBorgBackupPassthruCommand (int argc, char *argv[])
+{
+    size_t i = 0;
+
+    if (argc < 2)
+        return false;
+
+    for (i=0; i<g_PassthruCommandCount; i++)
+    {
+        if (0 == strcmp (argv[1], g_szPassthruCommands[i]))
+            return true;
+    }
+
+    return false;
+}
+
+
+int BorgBackupPassthru (int argc, char *argv[])
 {
     int    i         =  0;
     int    ret       =  0;
-    pid_t  pid       =  0;
-    int    InputFD   = -1;
-    int    OutputFD  = -1;
-    int    ErrorFD   = -1;
     int    ArgCount  =  argc+1;
     size_t ArgSize   =  ArgCount * sizeof (char *);
-
-    ssize_t BytesRead   = 0;
-    ssize_t BytesWrite  = 0;
     const char **ppArgs = NULL;
 
     /* Allocate variable argument list pointer */
@@ -1445,52 +1493,7 @@ int BorgBackupCreate (int argc, char *argv[])
         ppArgs[i] = argv[i];
     }
 
-    PushToSSHAgent();
-    SetEnvironmentVars();
-    pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 1, (const char **) ppArgs);
-    UnsetEnvironmentVars();
-
-    if (pid < 1)
-    {
-        printf ("\nBackup ERROR: Cannot start Borg process\n\n");
-        perror ("Backup ERROR: Cannot start Borg process");
-        ret = 1;
-        goto Done;
-    }
-
-    /* Check if Borg process provides output */
-    if (-1 != OutputFD)
-    {
-        while ((BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer)-1)))
-        {
-            g_Buffer[BytesRead] = '\0';
-            BytesWrite = write (1, g_Buffer, BytesRead);
-
-            if (BytesRead != BytesWrite)
-            {
-                perror ("Warning: Incomplete buffer write");
-            }
-
-            usleep (10*1000);
-        }
-    }
-
-    /* Check if Borg process signaled an error */
-    if (-1 != ErrorFD)
-    {
-        while ((BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1)))
-        {
-            g_Buffer[BytesRead] = '\0';
-            BytesWrite = write (2, g_Buffer, BytesRead);
-
-            if (BytesRead != BytesWrite)
-            {
-                perror ("Warning: Incomplete buffer write");
-            }
-
-            usleep (10*1000);
-        }
-    }
+    ret = InvokeBorgCommand ((const char **) ppArgs);
 
 Done:
 
@@ -1498,30 +1501,6 @@ Done:
     {
         free (ppArgs);
         ppArgs = NULL;
-    }
-
-    if (-1 != InputFD)
-    {
-        close (InputFD);
-        InputFD = -1;
-    }
-
-    if (-1 != OutputFD)
-    {
-        close (OutputFD);
-        OutputFD = -1;
-    }
-
-    if (-1 != ErrorFD)
-    {
-        close (ErrorFD);
-        ErrorFD = -1;
-    }
-
-    if (pid > 0)
-    {
-        pclose3 (pid);
-        pid = 0;
     }
 
     return ret;
@@ -1933,14 +1912,7 @@ Done:
 int BorgBackupInitRepo (const char *pszRepository)
 {
     int ret = 0;
-    int InputFD  = -1;
-    int OutputFD = -1;
-    int ErrorFD  = -1;
-
-    pid_t   pid       =  0;
-    ssize_t BytesRead = 0;
-
-    const char *args[] = { g_szBorgBackupBinary, "init", "--encryption", "repokey", pszRepository, NULL };
+    const char *args[] = { g_szBorgBackupBinary, "init", "--encryption", g_szBorgEncryptionMode, pszRepository, NULL };
 
     if (IsNullStr (pszRepository))
     {
@@ -1948,51 +1920,9 @@ int BorgBackupInitRepo (const char *pszRepository)
         goto Done;
     }
 
-    PushToSSHAgent();
-    SetEnvironmentVars();
-    pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 0, args);
-    UnsetEnvironmentVars();
-
-    if (pid < 1)
-    {
-        perror ("Restore ERROR: Cannot start Borg process");
-        ret = 1;
-        goto Done;
-    }
+    ret = InvokeBorgCommand (args);
 
 Done:
-
-    if (-1 != InputFD)
-    {
-        close (InputFD);
-        InputFD = -1;
-    }
-
-    if (-1 != OutputFD)
-    {
-        close (OutputFD);
-        OutputFD = -1;
-    }
-
-    if (-1 != ErrorFD)
-    {
-        /* Write potential error output into log */
-        BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1);
-        if (BytesRead > 0)
-        {
-            g_Buffer[BytesRead] = '\0';
-            printf ("%s\n", g_Buffer);
-        }
-
-        close (ErrorFD);
-        ErrorFD = -1;
-    }
-
-    if (pid > 0)
-    {
-        pclose3 (pid);
-        pid = 0;
-    }
 
     if (ret)
     {
@@ -2003,16 +1933,10 @@ Done:
 }
 
 
+
 int BorgBackupList (const char *pszArchiv)
 {
     int ret = 0;
-    int InputFD  = -1;
-    int OutputFD = -1;
-    int ErrorFD  = -1;
-
-    pid_t   pid        = 0;
-    ssize_t BytesRead  = 0;
-    ssize_t BytesWrite = 0;
 
     const char *args[] = { g_szBorgBackupBinary, "list", pszArchiv, NULL };
 
@@ -2022,73 +1946,30 @@ int BorgBackupList (const char *pszArchiv)
         goto Done;
     }
 
-    PushToSSHAgent();
-
-    SetEnvironmentVars();
-    pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 0, args);
-    UnsetEnvironmentVars();
-
-    if (pid < 1)
-    {
-        perror ("Backup ERROR: Cannot start Borg process");
-        ret = 1;
-        goto Done;
-    }
-
-    if (-1 == OutputFD)
-    {
-        perror ("Backup ERROR: No output file pointer returned");
-        ret = 1;
-        goto Done;
-    }
-
-    while ((BytesRead = read (OutputFD, g_Buffer, sizeof (g_Buffer))))
-    {
-        BytesWrite = write (1, g_Buffer, BytesRead);
-
-        if (BytesRead != BytesWrite)
-        {
-            perror ("Warning: Incomplete buffer write");
-        }
-    }
+    ret = InvokeBorgCommand (args);
 
 Done:
-
-    if (-1 != InputFD)
-    {
-        close (InputFD);
-        InputFD = -1;
-    }
-
-    if (-1 != OutputFD)
-    {
-        close (OutputFD);
-        OutputFD = -1;
-    }
-
-    if (-1 != ErrorFD)
-    {
-        /* Write potential error output into log */
-        BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1);
-        if (BytesRead > 0)
-        {
-            g_Buffer[BytesRead] = '\0';
-            printf ("%s\n", g_Buffer);
-        }
-
-        close (ErrorFD);
-        ErrorFD = -1;
-    }
-
-    if (pid > 0)
-    {
-        pclose3 (pid);
-        pid = 0;
-    }
 
     if (ret)
     {
         printf ("ERROR listing archive\n");
+    }
+
+    return ret;
+}
+
+
+int BorgBackupInfo (const char *pszArchiv)
+{
+    int ret = 0;
+
+    const char *args[] = { g_szBorgBackupBinary, "info", pszArchiv, NULL };
+
+    ret = InvokeBorgCommand (args);
+
+    if (ret)
+    {
+        printf ("ERROR borg info\n");
     }
 
     return ret;
@@ -2100,7 +1981,7 @@ int BorgBackupRestore (const char *pszArchiv, const char *pszSource, const char 
     int ret = 0;
     pid_t pid      =  0;
     FILE *fpOutput = NULL;
-    
+
     ssize_t BytesRead  = 0;
     ssize_t BytesWrite = 0;
     size_t  BytesTotal = 0;
@@ -2280,7 +2161,7 @@ int GetPassword()
 
     char szExe[2048]     = {0};
     char szProcess[2048] = {0};
- 
+
     snprintf (szProcess, sizeof (szProcess), "/proc/%d/exe", ppid);
 
     ret_size = readlink (szProcess, szExe, sizeof (szExe));
@@ -2345,6 +2226,8 @@ int ReadConfig (const char *pszConfigFile)
     if (0 == FileExists (pszConfigFile))
     {
         fprintf (stderr, "Info: No configuration profile found: %s\n", pszConfigFile);
+        ret= -1;
+        goto Done;
     }
 
     fp = fopen (pszConfigFile, "r");
@@ -2393,15 +2276,16 @@ int ReadConfig (const char *pszConfigFile)
             continue;
         }
 
-             if ( GetParam ("directory",        szBuffer, pszValue, sizeof (g_nshBorgDir),         g_nshBorgDir));
-        else if ( GetParam ("BORG_REPO",        szBuffer, pszValue, sizeof (g_szBorgRepo),         g_szBorgRepo));
-        else if ( GetParam ("BORG_PASSPHRASE",  szBuffer, pszValue, sizeof (g_szPassphrase),       g_szPassphrase));
-        else if ( GetParam ("BORG_PASSCOMMAND", szBuffer, pszValue, sizeof (g_szPassCommand),      g_szPassCommand));
-        else if ( GetParam ("BORG_RSH",         szBuffer, pszValue, sizeof (g_szBorgRSH),          g_szBorgRSH));
-        else if ( GetParam ("BORG_BASE_DIR",    szBuffer, pszValue, sizeof (g_szBaseDir),          g_szBaseDir));
-        else if ( GetParam ("BORG_REMOTE_PATH", szBuffer, pszValue, sizeof (g_szRemotePath),       g_szRemotePath));
-        else if ( GetParam ("BORG_BINARY",      szBuffer, pszValue, sizeof (g_szBorgBackupBinary), g_szBorgBackupBinary));
-        else if ( GetParam ("SSH_KEYFILE",      szBuffer, pszValue, sizeof (g_szSSHKeyFile),       g_szSSHKeyFile));
+             if ( GetParam ("directory",           szBuffer, pszValue, sizeof (g_nshBorgDir),            g_nshBorgDir));
+        else if ( GetParam ("BORG_REPO",           szBuffer, pszValue, sizeof (g_szBorgRepo),            g_szBorgRepo));
+        else if ( GetParam ("BORG_PASSPHRASE",     szBuffer, pszValue, sizeof (g_szPassphrase),          g_szPassphrase));
+        else if ( GetParam ("BORG_PASSCOMMAND",    szBuffer, pszValue, sizeof (g_szPassCommand),         g_szPassCommand));
+        else if ( GetParam ("BORG_RSH",            szBuffer, pszValue, sizeof (g_szBorgRSH),             g_szBorgRSH));
+        else if ( GetParam ("BORG_BASE_DIR",       szBuffer, pszValue, sizeof (g_szBaseDir),             g_szBaseDir));
+        else if ( GetParam ("BORG_ENCRYPTON_MODE", szBuffer, pszValue, sizeof (g_szBorgEncryptionMode),  g_szBorgEncryptionMode));
+        else if ( GetParam ("BORG_REMOTE_PATH",    szBuffer, pszValue, sizeof (g_szRemotePath),          g_szRemotePath));
+        else if ( GetParam ("BORG_BINARY",         szBuffer, pszValue, sizeof (g_szBorgBackupBinary),    g_szBorgBackupBinary));
+        else if ( GetParam ("SSH_KEYFILE",         szBuffer, pszValue, sizeof (g_szSSHKeyFile),          g_szSSHKeyFile));
 
         else if ( GetParam ("SSH_KEYLIFE", szBuffer, pszValue, sizeof (szNum), szNum))
         {
@@ -2414,6 +2298,10 @@ int ReadConfig (const char *pszConfigFile)
         else if ( GetParam ("BORG_MIN_PRUNE_DAYS", szBuffer, pszValue, sizeof (szNum), szNum))
         {
             g_MinPruneDays = atoi (szNum);
+        }
+        else if ( GetParam ("BORG_PASSTHRU_COMMANDS_ALLOWED", szBuffer, pszValue, sizeof (szNum), szNum))
+        {
+            g_BorgPassthruAllowed = atoi (szNum);
         }
 
         else
@@ -2436,18 +2324,285 @@ Done:
 }
 
 
+int CreateLinuxUser (const char *pszName)
+{
+    int ret = 0;
+    int InputFD  = -1;
+    int OutputFD = -1;
+    int ErrorFD  = -1;
+
+    pid_t   pid       =  0;
+    ssize_t BytesRead = 0;
+
+    const char *args[] = { "/usr/sbin/useradd", "-U", "-m", pszName, NULL };
+
+    if (IsNullStr (pszName))
+    {
+        ret = 1;
+        goto Done;
+    }
+
+    pid = popen3 (&InputFD, &OutputFD, &ErrorFD, 0, args);
+
+    if (pid < 1)
+    {
+        perror ("Cannot create user");
+        ret = 1;
+        goto Done;
+    }
+
+Done:
+
+    if (-1 != InputFD)
+    {
+        close (InputFD);
+        InputFD = -1;
+    }
+
+    if (-1 != OutputFD)
+    {
+        close (OutputFD);
+        OutputFD = -1;
+    }
+
+    if (-1 != ErrorFD)
+    {
+        /* Write potential error output into log */
+        BytesRead = read (ErrorFD, g_Buffer, sizeof (g_Buffer)-1);
+        if (BytesRead > 0)
+        {
+            g_Buffer[BytesRead] = '\0';
+            printf ("%s\n", g_Buffer);
+        }
+
+        close (ErrorFD);
+        ErrorFD = -1;
+    }
+
+    if (pid > 0)
+    {
+        pclose3 (pid);
+        pid = 0;
+    }
+
+    if (ret)
+    {
+        printf ("ERROR Creating user\n");
+    }
+
+    return ret;
+}
+
+
+int GeneratePassword (char *pszPassword, size_t RetSize)
+{
+    size_t i = 0;
+
+    const char charset[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                           "abcdefghijklmnopqrstuvwxyz"
+                           "0123456789"
+                           "!@#$%&-=+";
+
+    size_t CharsetSize = sizeof (charset) - 1;
+
+    if ( (0 == RetSize) || (NULL == pszPassword))
+        return -1;
+
+    RetSize--;
+    srand(time(NULL));
+    for (i = 0; i < RetSize; i++)
+    {
+        pszPassword[i] = charset[rand() % CharsetSize];
+    }
+
+    pszPassword[RetSize] = '\0';
+    return 0;
+}
+
+
+int WriteDefaultConfig (const char *pszConfigFile)
+{
+    int  ret = 0;
+    FILE *fp = NULL;
+    char szPassword[80+1] = {0};
+
+    if (IsNullStr (pszConfigFile))
+        return -1;
+
+    fp = fopen (pszConfigFile, "w");
+    if (NULL == fp)
+    {
+        perror("Failed to write configuration file");
+        return -1;
+    }
+
+    ret = GeneratePassword (szPassword, sizeof (szPassword));
+
+    fprintf(fp, "\n");
+    fprintf(fp, "BORG_PASSPHRASE=%s\n", szPassword);
+    fprintf(fp, "# BORG_ENCRYPTON_MODE=keyfile\n");
+    fprintf(fp, "# BORG_PASSTHRU_COMMANDS_ALLOWED=1\n");
+    fprintf(fp, "# BORG_BASE_DIR=/local/backup/borg\n");
+    fprintf(fp, "# BORG_RSH=ssh -p 123\n");
+    fprintf(fp, "# SSH_KEYFILE=/home/borg/.ssh/id_ed25519\n");
+    fclose(fp);
+
+    printf ("[OK] Configuration file created: %s\n", pszConfigFile);
+
+    memset (szPassword, 0, sizeof (szPassword));
+    return ret;
+}
+
+
+int SetupConfig()
+{
+    int    ret = 0;
+    struct passwd* pPW = NULL;
+    char   szCommand[MAX_PATH+100] = {0};
+    const char *pszConfigFile = g_szConfigFile;
+
+    if (g_uid)
+    {
+        /* If not root write a user config file */
+        pszConfigFile = g_szDominoConfigFile;
+    }
+    else
+    {
+        /* If root check and create borg user and write a global config only readable by borg user */
+
+        pPW = getpwnam("borg");
+
+        if (pPW)
+        {
+            printf ("[OK] Borg exists (uid: %u, gid: %u)\n", pPW->pw_uid, pPW->pw_gid);
+        }
+        else
+        {
+             CreateLinuxUser ("borg");
+             pPW = getpwnam("borg");
+        }
+
+        if (NULL == pPW)
+        {
+            printf ("Info: No 'borg' user configured\n");
+        }
+        else
+        {
+            if (0 == g_uid)
+            {
+                printf ("[OK] borg user exists\n");
+
+                ret = chown (g_szExe,pPW->pw_uid, pPW->pw_gid);
+                if (ret)
+                {
+                    perror ("Cannot change owner of nshborg binary to 'borg'");
+                    goto Done;
+                }
+
+                ret = chmod (g_szExe, S_ISUID | S_IRWXU | S_IXGRP | S_IXOTH | S_IRGRP | S_IROTH);
+                if (ret)
+                {
+                    perror ("Cannot change mode of nshborg binary to 'borg'");
+                    goto Done;
+                }
+            }
+
+        }
+    } /* root */
+
+    if (FileExists (pszConfigFile))
+    {
+        printf ("[OK] Configuration file already exists: %s\n", pszConfigFile);
+    }
+    else
+    {
+        /* Switch to effective user to write the config if not root */
+        if (0 != g_uid)
+            SwitchToUser (false);
+
+        ret = WriteDefaultConfig (pszConfigFile);
+
+        if (ret)
+            goto Done;
+
+        ret = chmod (pszConfigFile, S_IRUSR);
+
+        if (ret)
+        {
+            perror ("Cannot change mode for config file");
+            goto Done;
+        }
+
+        if (0 == g_uid)
+        {
+            ret = chown (pszConfigFile, g_uid, g_gid);
+            if (ret)
+            {
+                perror ("Cannot change owner for config file");
+                goto Done;
+            }
+
+            ret = chown (pszConfigFile, pPW->pw_uid, pPW->pw_gid);
+            if (ret)
+            {
+                perror ("Cannot change group for config file");
+                goto Done;
+            }
+        }
+        else
+        {
+            ret = chown (pszConfigFile, pPW->pw_uid, pPW->pw_gid);
+        }
+    }
+
+    if (isatty(STDIN_FILENO) && isatty(STDOUT_FILENO))
+    {
+        snprintf (szCommand, sizeof (szCommand), "vi '%s'", pszConfigFile);
+        system (szCommand);
+    }
+
+Done:
+
+    return ret;
+}
+
+void Usage()
+{
+    printf ("\nDomino Borg %s\n", g_szVersion);
+    printf ("--------------------\n");
+    printf ("Domino Backup & Restore Borg integration\n");
+    printf ("Copyright Nash!Com, Daniel Nashed 2024-2025\n\n");
+    printf ("Usage: %s [Options]\n\n", g_szExe);
+
+    printf ("-i <name>        Info about a repository or archive (-info)\n");
+    printf ("-l <archiv>      Lists a repository or archive (-list)\n");
+    printf ("-b <archiv>      Start a backup specifying an archive\n");
+    printf ("-r <name>        Restore database\n");
+    printf ("-t <name>        Specify restore target\n");
+    printf ("-a <name>        Specify an archive\n");
+    printf ("-o <name>        Specify a Borg repository\n");
+    printf ("-w <minutes>     Timeout for wiating for backup completion (default: 60 minutes)\n");
+    printf ("-q               Terminate a running backup sending an end marker file\n");
+    printf ("-prune <days>    Prunes archives older than specified number of days\n");
+    printf ("-delete          Deletes an archive\n");
+    printf ("-GETPW           Used when invoking the binary as a password helper to get the password\n");
+    printf ("-version         Print the version\n");
+
+    printf ("\n[Borg passthru commands directly if enabled]\n");
+    printf ("\n");
+}
+
+
 int main (int argc, char *argv[])
 {
     int ret         = 0;
     int len         = 0;
     int  consumed   = 1;
-    long TimeoutSec = 30*60;
+    long TimeoutSec = 60*60;
     long PruneDays  = 0;
     bool bInitRepo  = false;
 
     char szDefaultReqFile[MAX_PATH+1] = {0};
-    char szConfigFile[]       = "/etc/sysconfig/nshborg.cfg";
-    char szDominoConfigFile[] = "/local/notesdata/domino/nshborg.cfg";
 
     const char *pszFilename = NULL;
     const char *pszArchiv   = NULL;
@@ -2459,24 +2614,52 @@ int main (int argc, char *argv[])
 
     struct passwd *pPasswdEntry = NULL;
 
-    if (0 == g_uid)
+    umask (077);
+
+    /* Get onw binary name in a secure way. Never trust arg[0] */
+    len = readlink("/proc/self/exe", g_szExe, sizeof(g_szExe)-1);
+
+    if (len < 1)
+
     {
-        ret = 1;
-        printf ("\nRunning as 'root' is not allowed!\n");
-        goto Done;
+        printf ("Fatal error reding own binary name!\n");
+        exit (1);
+    }
+
+    /* Commands which should also work with root */
+    if (argc > 1)
+    {
+
+        if (0 == strcmp (argv[consumed], "-cfg"))
+        {
+            SetupConfig();
+            goto Done;
+        }
+
+        if ((0 == strcmp (argv[1], "-help")) || (0 == strcmp (argv[1], "-?")))
+        {
+            Usage();
+            goto Done;
+        }
     }
 
     /* Read configuration and SSH key with original user */
 
-    ret = ReadConfig (szConfigFile);
+    ret = ReadConfig (g_szConfigFile);
 
     /* If standard config location not found, use the Domino specific one */
     if (ret < 0)
-        ret = ReadConfig (szDominoConfigFile);
+        ret = ReadConfig (g_szDominoConfigFile);
 
     if (ret < 0)
     {
         printf ("Info: No Borg configuration found. Using defaults\n");
+    }
+
+    if (0 == g_uid)
+    {
+        printf ("Running as 'root' is not allowed!\n");
+        exit (1);
     }
 
     pPasswdEntry = getpwuid (geteuid());
@@ -2510,8 +2693,14 @@ int main (int argc, char *argv[])
         }
     }
 
+    if (g_Verbose)
+        DumpUser ("Before");
+
     /* Switch to effective user */
     SwitchToUser (false);
+
+    if (g_Verbose)
+        DumpUser ("After");
 
     pPasswdEntry = getpwuid (geteuid());
 
@@ -2528,30 +2717,44 @@ int main (int argc, char *argv[])
 
     CreateDirectoryTree (g_nshBorgDir, S_IRWXU);
 
-    if ((argc >2) && (0 == strcmp (argv[1], "create")))
+    if (IsBorgBackupPassthruCommand (argc, argv))
     {
-        BorgBackupCreate (argc, argv);
+        if (g_BorgPassthruAllowed)
+        {
+            printf ("Info: Running passthru command: %s\n", argv[1]);
+            BorgBackupPassthru (argc, argv);
+        }
+        else
+        {
+            printf ("Borg passthru commands not allowed!\n");
+            exit (1);
+        }
+
         goto Done;
     }
 
     while (argc > consumed)
     {
-        if (0 == strcmp (argv[consumed], "--version"))
+        if ( (0 == strcmp (argv[consumed], "--version")) || (0 == strcmp (argv[consumed], "-version")) )
         {
             printf ("%s\n", g_szVersion);
             goto Done;
         }
 
-        else if ((0 == strcmp (argv[consumed], "-i")) || (0 == strcmp (argv[consumed], "init")))
+        else if ((0 == strcmp (argv[consumed], "-i")) || (0 == strcmp (argv[consumed], "-init")))
         {
             bInitRepo = true;
         }
 
-        else if ((0 == strcmp (argv[consumed], "-l")) || (0 == strcmp (argv[consumed], "list")))
+        else if ((0 == strcmp (argv[consumed], "-l")) || (0 == strcmp (argv[consumed], "-list")))
         {
             consumed++;
             if (consumed >= argc)
-                goto InvalidSyntax;
+            {
+                BorgBackupList (g_szBorgRepo);
+                goto Done;
+            }
+
             if (argv[consumed][0] == '-')
                 goto InvalidSyntax;
 
@@ -2560,6 +2763,22 @@ int main (int argc, char *argv[])
             else
                 BorgBackupList (argv[consumed]);
 
+            goto Done;
+        }
+
+        else if (0 == strcmp (argv[consumed], "-info"))
+        {
+            consumed++;
+            if (consumed >= argc)
+            {
+                BorgBackupInfo (g_szBorgRepo);
+                goto Done;
+            }
+
+            if (argv[consumed][0] == '-')
+                goto InvalidSyntax;
+
+            BorgBackupList (argv[consumed]);
             goto Done;
         }
 
@@ -2637,7 +2856,7 @@ int main (int argc, char *argv[])
             if (argv[consumed][0] == '-')
                 goto InvalidSyntax;
 
-            TimeoutSec = atoi (argv[consumed]);
+            TimeoutSec = 60 * atoi (argv[consumed]);
         }
 
         else if (0 == strcmp (argv[consumed], "-q"))
