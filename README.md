@@ -110,11 +110,14 @@ See the [Borg documentation](https://borgbackup.readthedocs.io/en/stable/usage/g
 ### Creating and editing a configuration file
 
 The configuration command `-cfg` allows to edit the configuration file and creates a default configuration file when first invoked.
-
-- Running as root the global configuration is created/edited (/etc/sysconfig/nshborg.cfg).
-- Running with a normal user the local/application configuration is edited (/local/notesdata/domino/nshborg.cfg).
-
 Invoked with the root user nshborg file will be changed to the **borg** user and the SUID is set to allow to switch to the **borg** user to read the configuration.
+
+
+| Parameter     | Description                       | Invoked by |
+| :------------- | :------------------------------- | :------- |
+| /etc/sysconfig/nshborg.cfg | Standard configuration owned by borg user | root |
+| /local/notesdata/domino/nshborg.cfg | User configuration for container | notes user |
+
 
 ### Other configuration options
 
@@ -166,12 +169,12 @@ BORG_PASSTHRU_COMMANDS_ALLOWED=1
 ## Coexisting with existing backups
 
 Domino Backup only supports one backup configuration.
-If restore of older backups is required, you can move the existing database to a different file name.
+If a restore of older backups is required, you can move the existing database to a different file name.
 This will keep the exiting backup configuration and the existing backup inventory available.
 
 Create a new dominobackup.nsf by running the backup command once.
 Import the new configuration and start with your new backup.
 
-For restoring an existing backup, specify the configuration database explicitly using the command line option `-cfg myold-dominobackup.nsf`.
+For restoring an existing backup, specify the configuration database explicitly using the Domino Backup command line option `-cfg myold-dominobackup.nsf`.
 
 
