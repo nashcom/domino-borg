@@ -2438,8 +2438,9 @@ int WriteDefaultConfig (const char *pszConfigFile)
 
     ret = GeneratePassword (szPassword, sizeof (szPassword));
 
-    fprintf(fp, "\n");
+    fprintf(fp, "# Domino Backup configuration\n");
     fprintf(fp, "BORG_PASSPHRASE=%s\n", szPassword);
+    fprintf(fp, "# BORG_REPO=borg@domino.lab:/local/backup/borg\n");
     fprintf(fp, "# BORG_ENCRYPTON_MODE=keyfile\n");
     fprintf(fp, "# BORG_PASSTHRU_COMMANDS_ALLOWED=1\n");
     fprintf(fp, "# BORG_BASE_DIR=/local/backup/borg\n");
@@ -2474,7 +2475,7 @@ int SetupConfig()
 
         if (pPW)
         {
-            printf ("[OK] Borg exists (uid: %u, gid: %u)\n", pPW->pw_uid, pPW->pw_gid);
+            printf ("[OK] Borg user exists (uid: %u, gid: %u)\n", pPW->pw_uid, pPW->pw_gid);
         }
         else
         {

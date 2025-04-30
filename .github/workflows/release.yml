@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  release:
+    types: [published, edited, prereleased, released] 
+
+jobs:
+  release:
+    name: Build & Upload Binaries
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write  # Required to create releases
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build C++ binary (Alpine static)
+        run: |
+          docker run --rm \
+            -v "$PWD":/src \
+            -w /src/cpp \
+            alpine:latest \
+            sh -c "apk add --no-cache g++ musl-dev make && make"
+            VERSION=$(cat version.txt)
+            BORG_BIN="nshborg-$VERSION"
+            cp nshborg "$BORG_BIN"
+            sha256sum "$BORG_BIN" | cut -f1 -d" " > checksum.txt
+
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            nshborg-*
+            checksum.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
