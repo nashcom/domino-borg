@@ -14,10 +14,9 @@ header()
 }
 
 
-RELEASE=$(cat version.txt)
+RELEASE=v$(cat version.txt)
 
 header "Pushing release $RELEASE"
 
-git tag "$RELEASE"
 git push --force origin "$RELEASE"
 
