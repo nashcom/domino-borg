@@ -22,7 +22,8 @@ jobs:
             -v "$PWD":/src \
             -w /src/cpp \
             alpine:latest \
-            sh -c "apk add --no-cache g++ musl-dev make && make"
+            sh -c "apk add --no-cache g++ musl-dev make && SPECIAL_LINK_OPTIONS=-static make"
+            cd src
             VERSION=$(cat version.txt)
             BORG_BIN="nshborg-$VERSION"
             cp nshborg "$BORG_BIN"
