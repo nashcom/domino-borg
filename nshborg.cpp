@@ -1,7 +1,7 @@
 /*
 ###########################################################################
 # Domino Borg Backup Integration                                          #
-# Version 0.9.6 16.02.2025                                                #
+# Version 0.9.7 16.08.2025                                                #
 # (C) Copyright Daniel Nashed/NashCom 2023-2025                           #
 #                                                                         #
 # Licensed under the Apache License, Version 2.0 (the "License");         #
@@ -45,7 +45,7 @@
 /* Global buffer used for all I/O */
 unsigned char  g_Buffer[MAX_BUFFER+1] = {0};
 
-char  g_szVersion[]          = "0.9.6";
+char  g_szVersion[]          = "0.9.7";
 char  g_szBackupEndMarker[]  = "::BORG-BACKUP-END::";
 char  g_szSSH_AUTH_SOCK[]    = "SSH_AUTH_SOCK";
 char  g_szSSH_AGENT_PID[]    = "SSH_AGENT_PID";
@@ -59,14 +59,16 @@ char  g_szSSHAddBinary[MAX_PATH+1]     = "/usr/bin/ssh-add";
 char  g_szTarBinary[MAX_PATH+1]        = "/usr/bin/tar";
 char  g_szBorgRepo[MAX_PATH+1]         = "/local/backup/borg";
 char  g_szBorgEncryptionMode[40+1]     = "repokey";
-char  g_nshBorgDir[1024+1]             = {0};
 char  g_szExe[MAX_PATH+1]              = {0};
+char  g_szNshBorgDir[1024+1]           = {0};
 char  g_szFilePID[MAX_PATH+1]          = {0};
 char  g_szBorgLogFile[MAX_PATH+1]      = {0};
 char  g_szGetPwdFile[MAX_PATH+1]       = {0};
 char  g_szPassCommand[MAX_PATH+1]      = {0};
 char  g_szBorgRSH[MAX_PATH+1]          = {0};
 char  g_szBaseDir[MAX_PATH+1]          = {0};
+char  g_szBorgConfigDir[MAX_PATH+1]    = {0};
+char  g_szBorgKeysDir[MAX_PATH+1]      = {0};
 char  g_szRemotePath[MAX_PATH+1]       = {0};
 char  g_szPassphrase[256]              = {0};
 char  g_szSSHAuthSock[MAX_PATH+1]      = {0};
@@ -272,6 +274,20 @@ int SetEnvironmentVars()
             ret++;
     }
 
+    if (*g_szBorgConfigDir)
+    {
+        error = setenv ("BORG_CONFIG_DIR", g_szBorgConfigDir, 1);
+        if (error)
+            ret++;
+    }
+
+    if (*g_szBorgKeysDir)
+    {
+        error = setenv ("BORG_BASE_DIR", g_szBorgKeysDir, 1);
+        if (error)
+            ret++;
+    }
+
     if (*g_szRemotePath)
     {
         error = setenv ("BORG_REMOTE_PATH", g_szRemotePath, 1);
@@ -353,12 +369,10 @@ int UnsetEnvironmentVars()
         ret++;
 
     error = unsetenv ("BORG_PASSCOMMAND");
-
     if (error)
         ret++;
 
     error = unsetenv ("BORG_REPO");
-
     if (error)
         ret++;
 
@@ -836,6 +850,13 @@ Done:
 
     if (g_Verbose)
         printf ("nshborg process PID: %ld\n", pid);
+
+    /* Remove PID file if process does not exist */
+
+    if (0 == pid)
+    {
+        remove (g_szFilePID);
+    }
 
     return pid;
 }
@@ -2225,7 +2246,6 @@ int ReadConfig (const char *pszConfigFile)
 
     if (0 == FileExists (pszConfigFile))
     {
-        fprintf (stderr, "Info: No configuration profile found: %s\n", pszConfigFile);
         ret= -1;
         goto Done;
     }
@@ -2275,19 +2295,19 @@ int ReadConfig (const char *pszConfigFile)
             ret++;
             continue;
         }
-
-             if ( GetParam ("directory",           szBuffer, pszValue, sizeof (g_nshBorgDir),            g_nshBorgDir));
-        else if ( GetParam ("BORG_REPO",           szBuffer, pszValue, sizeof (g_szBorgRepo),            g_szBorgRepo));
-        else if ( GetParam ("BORG_PASSPHRASE",     szBuffer, pszValue, sizeof (g_szPassphrase),          g_szPassphrase));
-        else if ( GetParam ("BORG_PASSCOMMAND",    szBuffer, pszValue, sizeof (g_szPassCommand),         g_szPassCommand));
-        else if ( GetParam ("BORG_RSH",            szBuffer, pszValue, sizeof (g_szBorgRSH),             g_szBorgRSH));
-        else if ( GetParam ("BORG_BASE_DIR",       szBuffer, pszValue, sizeof (g_szBaseDir),             g_szBaseDir));
+             if ( GetParam ("directory",        szBuffer, pszValue, sizeof (g_szNshBorgDir),       g_szNshBorgDir));
+        else if ( GetParam ("BORG_REPO",        szBuffer, pszValue, sizeof (g_szBorgRepo),         g_szBorgRepo));
+        else if ( GetParam ("BORG_PASSPHRASE",  szBuffer, pszValue, sizeof (g_szPassphrase),       g_szPassphrase));
+        else if ( GetParam ("BORG_PASSCOMMAND", szBuffer, pszValue, sizeof (g_szPassCommand),      g_szPassCommand));
+        else if ( GetParam ("BORG_RSH",         szBuffer, pszValue, sizeof (g_szBorgRSH),          g_szBorgRSH));
+        else if ( GetParam ("BORG_BASE_DIR",    szBuffer, pszValue, sizeof (g_szBaseDir),          g_szBaseDir));
+        else if ( GetParam ("BORG_REMOTE_PATH", szBuffer, pszValue, sizeof (g_szRemotePath),       g_szRemotePath));
+        else if ( GetParam ("BORG_BINARY",      szBuffer, pszValue, sizeof (g_szBorgBackupBinary), g_szBorgBackupBinary));
+        else if ( GetParam ("BORG_CONFIG_DIR",  szBuffer, pszValue, sizeof (g_szBorgConfigDir),    g_szBorgConfigDir));
+        else if ( GetParam ("BORG_KEYS_DIR",    szBuffer, pszValue, sizeof (g_szBorgKeysDir),      g_szBorgKeysDir));
+        else if ( GetParam ("SSH_KEYFILE",      szBuffer, pszValue, sizeof (g_szSSHKeyFile),       g_szSSHKeyFile));
         else if ( GetParam ("BORG_ENCRYPTON_MODE", szBuffer, pszValue, sizeof (g_szBorgEncryptionMode),  g_szBorgEncryptionMode));
-        else if ( GetParam ("BORG_REMOTE_PATH",    szBuffer, pszValue, sizeof (g_szRemotePath),          g_szRemotePath));
-        else if ( GetParam ("BORG_BINARY",         szBuffer, pszValue, sizeof (g_szBorgBackupBinary),    g_szBorgBackupBinary));
-        else if ( GetParam ("SSH_KEYFILE",         szBuffer, pszValue, sizeof (g_szSSHKeyFile),          g_szSSHKeyFile));
-
-        else if ( GetParam ("SSH_KEYLIFE", szBuffer, pszValue, sizeof (szNum), szNum))
+        else if ( GetParam ("SSH_KEYLIFE",      szBuffer, pszValue, sizeof (szNum), szNum))
         {
             g_SSHKeyLife = atoi (szNum);
         }
@@ -2559,7 +2579,7 @@ int SetupConfig()
     if (isatty(STDIN_FILENO) && isatty(STDOUT_FILENO))
     {
         snprintf (szCommand, sizeof (szCommand), "vi '%s'", pszConfigFile);
-        system (szCommand);
+        ret = system (szCommand);
     }
 
 Done:
@@ -2582,7 +2602,7 @@ void Usage()
     printf ("-t <name>        Specify restore target\n");
     printf ("-a <name>        Specify an archive\n");
     printf ("-o <name>        Specify a Borg repository\n");
-    printf ("-w <minutes>     Timeout for wiating for backup completion (default: 60 minutes)\n");
+    printf ("-w <minutes>     Timeout for waiting for backup completion (default: 60 minutes)\n");
     printf ("-q               Terminate a running backup sending an end marker file\n");
     printf ("-prune <days>    Prunes archives older than specified number of days\n");
     printf ("-delete          Deletes an archive\n");
@@ -2705,18 +2725,18 @@ int main (int argc, char *argv[])
 
     pPasswdEntry = getpwuid (geteuid());
 
-    if (!*g_nshBorgDir)
-        snprintf (g_nshBorgDir, sizeof (g_nshBorgDir), "%s/.nshborg", pPasswdEntry ? pPasswdEntry->pw_dir : "/tmp");
+    if (!*g_szNshBorgDir)
+        snprintf (g_szNshBorgDir, sizeof (g_szNshBorgDir), "%s/.nshborg", pPasswdEntry ? pPasswdEntry->pw_dir : "/tmp");
 
     if (g_Verbose)
-        printf ("nshborg Directory: [%s]\n", g_nshBorgDir);
+        printf ("nshborg Directory: [%s]\n", g_szNshBorgDir);
 
-    snprintf (g_szFilePID,      sizeof (g_szFilePID),      "%s/nshborg.pid",     g_nshBorgDir);
-    snprintf (g_szBorgLogFile,  sizeof (g_szBorgLogFile),  "%s/nshborg.log",     g_nshBorgDir);
-    snprintf (g_szGetPwdFile,   sizeof (g_szGetPwdFile),   "%s/nshborg_pwd.log", g_nshBorgDir);
-    snprintf (szDefaultReqFile, sizeof (szDefaultReqFile), "%s/.nshborg.reg",    g_nshBorgDir);
+    snprintf (g_szFilePID,      sizeof (g_szFilePID),      "%s/nshborg.pid",     g_szNshBorgDir);
+    snprintf (g_szBorgLogFile,  sizeof (g_szBorgLogFile),  "%s/nshborg.log",     g_szNshBorgDir);
+    snprintf (g_szGetPwdFile,   sizeof (g_szGetPwdFile),   "%s/nshborg_pwd.log", g_szNshBorgDir);
+    snprintf (szDefaultReqFile, sizeof (szDefaultReqFile), "%s/.nshborg.reg",    g_szNshBorgDir);
 
-    CreateDirectoryTree (g_nshBorgDir, S_IRWXU);
+    CreateDirectoryTree (g_szNshBorgDir, S_IRWXU);
 
     if (IsBorgBackupPassthruCommand (argc, argv))
     {

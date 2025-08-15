@@ -16,7 +16,7 @@ $(TARGET): $(PROGRAM).o
 	$(CC) $(PROGRAM).o $(LIBS) -o $(TARGET) $(SPECIAL_LINK_OPTIONS)
 
 $(PROGRAM).o: $(PROGRAM).cpp
-	$(CC)  $(CFLAGS) $(PROGRAM).cpp -DLINUX -DUNIX -O1 #-D_FORTIFY_SOURCE=3
+	$(CC)  $(CFLAGS) $(PROGRAM).cpp -DLINUX -DUNIX -O1 
 
 clean:
 	rm -f $(TARGET) *.o

@@ -104,6 +104,8 @@ See the [Borg documentation](https://borgbackup.readthedocs.io/en/stable/usage/g
 | BORG_PASSCOMMAND | Borg passphrase credential helper binary | |
 | BORG_RSH | Borg ssh command-line | |
 | BORG_BASE_DIR | Borg base directory | |
+| BORG_CONFIG_DIR  | Borg config directory | |
+| BORG_KEYS_DIR | Borg keys directory | |
 | BORG_REMOTE_PATH | Borg remote binary name for SSH operations | |
 
 
@@ -130,6 +132,7 @@ Invoked with the root user nshborg file will be changed to the **borg** user and
 | BORG_DELETE_ALLOWED | 1 = Allow delete operation | Disabled |
 | BORG_MIN_PRUNE_DAYS | Minimum prune days | 7 days |
 | BORG_PASSTHRU_COMMANDS_ALLOWED | Allow passthru commands | 0 |
+
 
 ### Repository encryption
 
