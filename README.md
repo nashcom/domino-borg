@@ -143,17 +143,23 @@ Borg supports repository keys and separate local keyfiles.
 
 The configuration file option for using a local keyfile has to be specified before the repository is initialized and cannot be changed after it has been initialized.
 
-Set the following configuration option for using keyfiles instead of repository keys
-
-```
-BORG_ENCRYPTON_MODE=keyfile
-```
-
-
 IMPORTANT: When using a local key file, the key file must be backed up separately!!!
 
 Please refer to Borg Backup documentation for detail about localtion of the keyfiles and how to protect them.
 There is also a key export and import command available. See [borg key export](https://borgbackup.readthedocs.io/en/stable/usage/key.html#borg-key-export) and [borg init](https://borgbackup.readthedocs.io/en/stable/usage/init.html) documentation for details.
+
+
+Example command for a local encrypted repository where the key is stored in repository:
+
+```
+borg init --encryption=repokey-blake2 /local/borg
+```
+
+Example for a remote repository where the key is in the local borg configuraiton in user home:
+
+```
+borg init --encryption=keyfile-blake2 ssh://u123456@u123456.your-storagebox.de:23/./borg_domino
+```
 
 
 ### Borg Passthru Commands
