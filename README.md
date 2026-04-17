@@ -161,6 +161,10 @@ Example for a remote repository where the key is in the local borg configuraiton
 borg init --encryption=keyfile-blake2 ssh://u123456@u123456.your-storagebox.de:23/./borg_domino
 ```
 
+With passthru commands enabled the configuration can be ommited.
+See the Hetzner Tuturial for an example configuration.
+For local repositories no SSH configuration is needed.
+
 
 ### Borg Passthru Commands
 
@@ -173,6 +177,11 @@ To enable the passthru functionality set the follwoing configuration option:
 ```
 BORG_PASSTHRU_COMMANDS_ALLOWED=1
 ```
+
+
+## Hetzner Storagebox Setup
+
+Check [Hetzner Storagebox Tutorial](docs/tutorial_hetzner.md) for a step by step configuraiton example.
 
 
 ## Coexisting with existing backups
